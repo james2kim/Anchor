@@ -1,4 +1,5 @@
 import { haikuModel } from '../agent/constants';
+import { withRetry } from '../util/RetryUtil';
 import { z } from 'zod/v4';
 
 const rewriteSchema = z.object({
@@ -51,13 +52,16 @@ export async function rewriteQuery(
   }
 
   try {
-    const response = await modelWithSchema.invoke([
-      { role: 'system', content: REWRITE_SYSTEM_PROMPT },
-      {
-        role: 'user',
-        content: `Context:\n${conversationContext}\n\nQuery: "${query}"`,
-      },
-    ]);
+    const response = await withRetry(
+      () => modelWithSchema.invoke([
+        { role: 'system', content: REWRITE_SYSTEM_PROMPT },
+        {
+          role: 'user',
+          content: `Context:\n${conversationContext}\n\nQuery: "${query}"`,
+        },
+      ]),
+      { label: 'queryRewriter' }
+    );
 
     // Derive wasRewritten by comparing strings
     const wasRewritten = response.rewrittenQuery.toLowerCase() !== query.toLowerCase();

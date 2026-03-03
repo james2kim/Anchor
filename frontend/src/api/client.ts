@@ -1,6 +1,12 @@
+export interface RateLimitInfo {
+  limit: number;
+  remaining: number;
+}
+
 export interface ChatResponse {
   response: string;
   sessionId?: string;
+  rateLimit?: RateLimitInfo;
 }
 
 export interface UploadResponse {
@@ -44,12 +50,22 @@ export async function sendMessage(
     body: JSON.stringify({ message }),
   });
 
+  const rateLimit: RateLimitInfo | undefined = response.headers.get('X-RateLimit-Limit')
+    ? {
+        limit: Number(response.headers.get('X-RateLimit-Limit')),
+        remaining: Number(response.headers.get('X-RateLimit-Remaining')),
+      }
+    : undefined;
+
   if (!response.ok) {
     const data = await response.json();
-    throw new Error(data.error || 'Failed to send message');
+    const err = new Error(data.error || 'Failed to send message');
+    (err as Error & { rateLimit?: RateLimitInfo }).rateLimit = rateLimit;
+    throw err;
   }
 
-  return response.json();
+  const data = await response.json();
+  return { ...data, rateLimit };
 }
 
 export async function uploadFile(

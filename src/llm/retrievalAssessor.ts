@@ -4,6 +4,7 @@ import {
   retrievalGateAssessmentSchema,
 } from '../schemas/types';
 import { haikuModel } from '../agent/constants';
+import { withRetry } from '../util/RetryUtil';
 
 const SYSTEM_PROMPT = `Classify this query for a study assistant.
 
@@ -145,10 +146,13 @@ export const retrievalGateAssessor = async (query: string): Promise<RetrievalGat
 
   // Fall back to LLM for ambiguous queries
   try {
-    const result = await modelWithSchema.invoke([
-      { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: query },
-    ]);
+    const result = await withRetry(
+      () => modelWithSchema.invoke([
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: query },
+      ]),
+      { label: 'retrievalGateAssessor' }
+    );
     console.log(`[retrievalGateAssessor] LLM-based: ${result.queryType}`);
     return result;
   } catch (error) {

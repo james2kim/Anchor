@@ -3,6 +3,7 @@ import type { BaseMessage } from '@langchain/core/messages';
 import { sonnetModel, haikuModel } from '../constants';
 import { SYSTEM_MESSAGE, buildContextBlock } from '../../llm/promptBuilder';
 import { TraceUtil } from '../../util/TraceUtil';
+import { withRetry } from '../../util/RetryUtil';
 import { SystemMessage, HumanMessage, AIMessage } from '@langchain/core/messages';
 
 // Route to Haiku if retrieval is relevant
@@ -140,7 +141,7 @@ export const injectContext = async (state: AgentState) => {
   );
 
   const startTime = Date.now();
-  const aiMessage = await model.invoke(messagesForLLM);
+  const aiMessage = await withRetry(() => model.invoke(messagesForLLM), { label: 'injectContext' });
   const durationMs = Date.now() - startTime;
 
   const response =

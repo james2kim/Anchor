@@ -7,7 +7,8 @@ import { ThinkingIndicator } from './components/ThinkingIndicator';
 import { useChat } from './hooks/useChat';
 
 function App() {
-  const { messages, isLoading, handleSend, handleUpload } = useChat();
+  const { messages, isLoading, rateLimit, handleSend, handleUpload } = useChat();
+  const isRateLimited = rateLimit !== null && rateLimit.remaining <= 0;
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to bottom when messages change
@@ -48,7 +49,12 @@ function App() {
             <div ref={messagesEndRef} />
           </div>
 
-          <ChatInput onSend={handleSend} disabled={isLoading} />
+          {isRateLimited && (
+            <div className="rate-limit-alert">
+              Daily message limit reached ({rateLimit.limit}/{rateLimit.limit}). Please try again tomorrow.
+            </div>
+          )}
+          <ChatInput onSend={handleSend} disabled={isLoading || isRateLimited} />
           <FileUpload onUpload={handleUpload} disabled={isLoading} />
         </div>
       </SignedIn>

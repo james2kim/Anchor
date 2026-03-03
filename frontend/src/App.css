@@ -112,6 +112,16 @@ header h1 {
   max-width: 100%;
 }
 
+.rate-limit-alert {
+  background: #fef3cd;
+  color: #856404;
+  border: 1px solid #ffc107;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  font-size: 0.875rem;
+  text-align: center;
+}
+
 .input-area {
   display: flex;
   gap: 0.5rem;

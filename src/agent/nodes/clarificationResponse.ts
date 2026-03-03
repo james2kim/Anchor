@@ -1,6 +1,7 @@
 import type { AgentState, FinalAction } from '../../schemas/types';
 import { haikuModel } from '../constants';
 import { TraceUtil } from '../../util/TraceUtil';
+import { withRetry } from '../../util/RetryUtil';
 
 const CLARIFICATION_SYSTEM_MESSAGE = `You are a Study Assistant Agent. The user asked something that is outside your core domain or requires clarification.
 
@@ -20,10 +21,13 @@ export const clarificationResponse = async (state: AgentState) => {
   const span = TraceUtil.startSpan('clarificationResponse');
   let trace = state.trace!;
 
-  const aiMessage = await haikuModel.invoke([
-    { role: 'system', content: CLARIFICATION_SYSTEM_MESSAGE },
-    { role: 'user', content: state.userQuery },
-  ]);
+  const aiMessage = await withRetry(
+    () => haikuModel.invoke([
+      { role: 'system', content: CLARIFICATION_SYSTEM_MESSAGE },
+      { role: 'user', content: state.userQuery },
+    ]),
+    { label: 'clarificationResponse' }
+  );
 
   const response =
     typeof aiMessage.content === 'string' ? aiMessage.content : JSON.stringify(aiMessage.content);

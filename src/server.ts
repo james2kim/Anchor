@@ -116,6 +116,28 @@ app.use(express.static(path.join(__dirname, '../public')));
 // Configure multer for file uploads
 const upload = multer({ storage: multer.memoryStorage() });
 
+// Rate limiting (production only)
+const DAILY_CHAT_LIMIT = 40;
+const RATE_LIMIT_TTL = 86400; // 24 hours in seconds
+const isProduction = process.env.NODE_ENV === 'production';
+
+async function checkRateLimit(userId: string): Promise<{ allowed: boolean; remaining: number }> {
+  if (!isProduction) return { allowed: true, remaining: DAILY_CHAT_LIMIT };
+
+  const key = `ratelimit:chat:${userId}`;
+  const client = RedisSessionStore.getClient();
+
+  const count = await client.incr(key);
+
+  // Set TTL on first request of the window
+  if (count === 1) {
+    await client.expire(key, RATE_LIMIT_TTL);
+  }
+
+  const remaining = Math.max(0, DAILY_CHAT_LIMIT - count);
+  return { allowed: count <= DAILY_CHAT_LIMIT, remaining };
+}
+
 // Global state (initialized on startup)
 let agentApp: ReturnType<typeof buildWorkflow>;
 let documentStore: DocumentStore;
@@ -204,6 +226,17 @@ app.post('/api/chat', requireAuth(), async (req, res) => {
 
     // Get or create user and session
     const userId = await getOrCreateUser(clerkUserId);
+
+    // Rate limit check (production only)
+    const { allowed, remaining } = await checkRateLimit(userId);
+    if (!allowed) {
+      res.set('X-RateLimit-Limit', String(DAILY_CHAT_LIMIT));
+      res.set('X-RateLimit-Remaining', '0');
+      return res.status(429).json({
+        error: `Daily message limit reached (${DAILY_CHAT_LIMIT}/day). Please try again tomorrow.`,
+      });
+    }
+
     const sessionId = await getUserSession(userId);
 
     const result = await getFormattedAnswerToUserinput(message, sessionId, userId);
@@ -240,6 +273,8 @@ app.post('/api/chat', requireAuth(), async (req, res) => {
       };
     }
 
+    res.set('X-RateLimit-Limit', String(DAILY_CHAT_LIMIT));
+    res.set('X-RateLimit-Remaining', String(remaining));
     res.json(response);
 
     // Run background tasks (fire and forget)

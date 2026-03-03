@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@clerk/clerk-react';
-import { sendMessage, uploadFile, getSession, parseSessionMessage } from '../api/client';
+import { sendMessage, uploadFile, getSession, parseSessionMessage, type RateLimitInfo } from '../api/client';
 
 export interface Message {
   id: string;
@@ -19,6 +19,7 @@ export function useChat() {
     },
   ]);
   const [isLoading, setIsLoading] = useState(false);
+  const [rateLimit, setRateLimit] = useState<RateLimitInfo | null>(null);
 
   // Load session messages on mount
   useEffect(() => {
@@ -61,8 +62,11 @@ export function useChat() {
 
       try {
         const response = await sendMessage(content, getToken);
+        if (response.rateLimit) setRateLimit(response.rateLimit);
         addMessage('assistant', response.response);
       } catch (err) {
+        const rateLimitInfo = (err as Error & { rateLimit?: RateLimitInfo }).rateLimit;
+        if (rateLimitInfo) setRateLimit(rateLimitInfo);
         addMessage('system', err instanceof Error ? err.message : 'Failed to send message. Please try again.');
       } finally {
         setIsLoading(false);
@@ -88,6 +92,7 @@ export function useChat() {
   return {
     messages,
     isLoading,
+    rateLimit,
     handleSend,
     handleUpload,
   };

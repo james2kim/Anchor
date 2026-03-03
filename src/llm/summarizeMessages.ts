@@ -4,6 +4,7 @@ import type { BaseMessage } from '@langchain/core/messages';
 import type { Message } from '../schemas/types';
 import { z } from 'zod/v4';
 import { haikuModel } from '../agent/constants';
+import { withRetry } from '../util/RetryUtil';
 
 const MAX_SUMMARY_CHARS = 2500;
 const COMPRESSION_THRESHOLD = 2400; // Start compressing before hitting hard limit
@@ -59,13 +60,16 @@ async function compressSummary(content: string, maxAttempts = 1): Promise<string
 
   while (current.length > COMPRESSION_THRESHOLD && attempts < maxAttempts) {
     attempts++;
-    const response = await haikuModel.invoke([
-      {
-        role: 'system',
-        content: COMPRESS_SUMMARY_PROMPT.replace('{{LENGTH}}', String(current.length)),
-      },
-      { role: 'user', content: current },
-    ]);
+    const response = await withRetry(
+      () => haikuModel.invoke([
+        {
+          role: 'system',
+          content: COMPRESS_SUMMARY_PROMPT.replace('{{LENGTH}}', String(current.length)),
+        },
+        { role: 'user', content: current },
+      ]),
+      { label: 'compressSummary' }
+    );
 
     const compressed =
       typeof response.content === 'string' ? response.content : JSON.stringify(response.content);
@@ -108,13 +112,16 @@ export const summarize = async (existingSummary: string, messages: BaseMessage[]
     : '';
 
   // Use relaxed schema to allow overflow, then compress if needed
-  const response = await modelWithRelaxedSchema.invoke([
-    { role: 'system', content: SUMMARIZE_MESSAGES_SYSTEM_PROMPT },
-    {
-      role: 'user',
-      content: `Summarize this conversation and merge with any existing summary:${existingSummarySection}\n\nNEW CONVERSATION:\n${formattedMessages}`,
-    },
-  ]);
+  const response = await withRetry(
+    () => modelWithRelaxedSchema.invoke([
+      { role: 'system', content: SUMMARIZE_MESSAGES_SYSTEM_PROMPT },
+      {
+        role: 'user',
+        content: `Summarize this conversation and merge with any existing summary:${existingSummarySection}\n\nNEW CONVERSATION:\n${formattedMessages}`,
+      },
+    ]),
+    { label: 'summarize' }
+  );
 
   // Compress if summary exceeds threshold
   let finalContent = response.content;
@@ -145,13 +152,16 @@ export const summarizeSessionMessages = async (
     ? `\n\nEXISTING SUMMARY TO MERGE:\n${existingSummary}`
     : '';
 
-  const response = await modelWithRelaxedSchema.invoke([
-    { role: 'system', content: SUMMARIZE_MESSAGES_SYSTEM_PROMPT },
-    {
-      role: 'user',
-      content: `Summarize this conversation and merge with any existing summary:${existingSummarySection}\n\nNEW CONVERSATION:\n${formattedMessages}`,
-    },
-  ]);
+  const response = await withRetry(
+    () => modelWithRelaxedSchema.invoke([
+      { role: 'system', content: SUMMARIZE_MESSAGES_SYSTEM_PROMPT },
+      {
+        role: 'user',
+        content: `Summarize this conversation and merge with any existing summary:${existingSummarySection}\n\nNEW CONVERSATION:\n${formattedMessages}`,
+      },
+    ]),
+    { label: 'summarizeSession' }
+  );
 
   let finalContent = response.content;
   if (finalContent.length > COMPRESSION_THRESHOLD) {

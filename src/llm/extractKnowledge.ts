@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
 dotenv.config({ path: '.env.local' });
 import { sonnetModel } from '../agent/constants';
+import { withRetry } from '../util/RetryUtil';
 
 import { knowledgeExtractionSchema, type KnowledgeExtraction } from '../schemas/types';
 
@@ -56,10 +57,13 @@ const modelWithKnowledgeStructure = sonnetModel.withStructuredOutput(knowledgeEx
 
 export const extractKnowledge = async (input: string): Promise<KnowledgeExtraction | null> => {
   try {
-    const response = await modelWithKnowledgeStructure.invoke([
-      { role: 'system', content: KNOWLEDGE_EXTRACTION_PROMPT },
-      { role: 'user', content: input },
-    ]);
+    const response = await withRetry(
+      () => modelWithKnowledgeStructure.invoke([
+        { role: 'system', content: KNOWLEDGE_EXTRACTION_PROMPT },
+        { role: 'user', content: input },
+      ]),
+      { label: 'extractKnowledge' }
+    );
     return response;
   } catch (err) {
     // Haiku sometimes struggles with nested structured outputs

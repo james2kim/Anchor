@@ -1,5 +1,6 @@
 import { VoyageAIClient } from 'voyageai';
 import dotenv from 'dotenv';
+import { withRetry } from '../util/RetryUtil';
 dotenv.config({ path: '.env.local' });
 
 export class EmbeddingService {
@@ -17,11 +18,10 @@ export class EmbeddingService {
   }
 
   async embedText(text: string, inputType: 'document' | 'query' = 'document'): Promise<number[]> {
-    const response = await this.client.embed({
-      input: text,
-      model: this.model,
-      inputType: inputType,
-    });
+    const response = await withRetry(
+      () => this.client.embed({ input: text, model: this.model, inputType: inputType }),
+      { label: 'embedText' }
+    );
     const embedding = response.data?.[0]?.embedding;
     if (!embedding) {
       throw new Error('Embedding failed');
