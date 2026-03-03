@@ -17,16 +17,7 @@ export const retrieveMemoriesAndChunks = async (state: AgentState) => {
   const userId = state.userId;
   const queryEmbedding = state.queryEmbedding;
 
-  if (!queryEmbedding) {
-    trace = span.end(trace, {
-      skipped: true,
-      reason: 'no_embedding',
-    });
-    return {
-      retrievedContext: { documents: [], memories: [] },
-      trace,
-    };
-  }
+  const embeddingAvailable = !!queryEmbedding;
 
   const retrievalTasks: Promise<void>[] = [];
   const documents: DocumentChunk[] = [];
@@ -38,7 +29,7 @@ export const retrieveMemoriesAndChunks = async (state: AgentState) => {
   if (decision?.shouldRetrieveMemories) {
     // Two-tier memory retrieval:
     // 1. Always fetch profile memories (preferences + facts) - no embedding needed
-    // 2. Similarity search for contextual memories (goals, decisions, etc.)
+    // 2. Similarity search for contextual memories (goals, decisions, etc.) - requires embedding
 
     const isFullBudget = decision.memoryBudget === 'full';
     const profileLimit = isFullBudget ? 3 : 2;
@@ -56,21 +47,23 @@ export const retrieveMemoriesAndChunks = async (state: AgentState) => {
       })
     );
 
-    // Tier 2: Contextual memories via similarity search (exclude preference/fact to avoid dupes)
-    retrievalTasks.push(
-      MemoryUtil.retrieveRelevantMemories(userId, query, {
-        maxResults: contextualLimit,
-        maxTokens: isFullBudget ? 300 : 150,
-        minConfidence: 0.5,
-        queryEmbedding,
-        allowedTypes: ['goal', 'decision', 'summary'],
-      }).then((result) => {
-        if (result.success) {
-          contextualMemoryCount = result.memories.length;
-          memories.push(...result.memories);
-        }
-      })
-    );
+    // Tier 2: Contextual memories via similarity search (requires embedding)
+    if (embeddingAvailable) {
+      retrievalTasks.push(
+        MemoryUtil.retrieveRelevantMemories(userId, query, {
+          maxResults: contextualLimit,
+          maxTokens: isFullBudget ? 300 : 150,
+          minConfidence: 0.5,
+          queryEmbedding,
+          allowedTypes: ['goal', 'decision', 'summary'],
+        }).then((result) => {
+          if (result.success) {
+            contextualMemoryCount = result.memories.length;
+            memories.push(...result.memories);
+          }
+        })
+      );
+    }
   }
 
   if (decision?.shouldRetrieveDocuments) {
@@ -78,7 +71,7 @@ export const retrieveMemoriesAndChunks = async (state: AgentState) => {
       DocumentUtil.retrieveRelevantChunks(
         documentStore,
         {
-          queryEmbedding,
+          queryEmbedding: queryEmbedding ?? undefined,
           user_id: userId,
           topK: 30,
           userQuery: state.userQuery,
@@ -106,6 +99,7 @@ export const retrieveMemoriesAndChunks = async (state: AgentState) => {
     memoriesRetrieved: memories.length,
     profileMemories: profileMemoryCount,
     contextualMemories: contextualMemoryCount,
+    embeddingFallback: !embeddingAvailable,
   };
 
   if (retrievalDiagnostics !== null) {

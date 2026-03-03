@@ -28,7 +28,10 @@ export const retrievalGate = async (state: AgentState) => {
 
   const [assessment, queryEmbedding] = await Promise.all([
     retrievalGateAssessor(queryForProcessing),
-    defaultEmbedding.embedText(queryForProcessing, 'query'),
+    defaultEmbedding.embedText(queryForProcessing, 'query').catch((err) => {
+      console.warn('[retrievalGate] Embedding failed, falling back to keyword-only:', err instanceof Error ? err.message : err);
+      return null;
+    }),
   ]);
 
   const decision = retrievalGatePolicy(assessment);

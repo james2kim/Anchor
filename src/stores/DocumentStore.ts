@@ -199,7 +199,7 @@ export class DocumentStore {
   async hybridSearch(
     input: {
       query: string;
-      queryEmbedding: number[];
+      queryEmbedding?: number[];
       user_id: string;
       topK: number;
       filterYear?: number;
@@ -209,17 +209,21 @@ export class DocumentStore {
     chunks: Awaited<ReturnType<DocumentStore['listChunksBySimilarity']>>;
     diagnostics: HybridSearchDiagnostics;
   }> {
-    // Run both searches in parallel
+    // Run both searches in parallel (skip embedding search if no embedding available)
+    const embeddingPromise = input.queryEmbedding
+      ? this.listChunksBySimilarity(
+          {
+            queryEmbedding: input.queryEmbedding,
+            user_id: input.user_id,
+            topK: input.topK * 2, // Fetch more for fusion
+            filterYear: input.filterYear,
+          },
+          trx
+        )
+      : Promise.resolve([] as Awaited<ReturnType<DocumentStore['listChunksBySimilarity']>>);
+
     const [embeddingResults, keywordResults] = await Promise.all([
-      this.listChunksBySimilarity(
-        {
-          queryEmbedding: input.queryEmbedding,
-          user_id: input.user_id,
-          topK: input.topK * 2, // Fetch more for fusion
-          filterYear: input.filterYear,
-        },
-        trx
-      ),
+      embeddingPromise,
       this.listChunksByKeyword(
         {
           query: input.query,
@@ -243,9 +247,9 @@ export class DocumentStore {
       scores.set(chunk.id, existing);
     });
 
-    // Score keyword results
+    // Score keyword results (assign default distance when embedding is unavailable)
     keywordResults.forEach((chunk, rank) => {
-      const existing = scores.get(chunk.id) ?? { chunk, score: 0 };
+      const existing = scores.get(chunk.id) ?? { chunk: { ...chunk, distance: chunk.distance ?? 0.75 }, score: 0 };
       existing.score += 1 / (k + rank + 1);
       scores.set(chunk.id, existing);
     });

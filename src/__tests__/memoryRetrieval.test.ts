@@ -2,6 +2,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { MemoryUtil } from '../util/MemoryUtil';
 import { db } from '../db/knex';
 import { TEST_MEMORIES, TEST_MEMORY_QUERIES, TEST_USER_ID } from './fixtures/testMemories';
+import { MemoryStore } from '../stores/MemoryStore';
+import { defaultEmbedding } from '../services/EmbeddingService';
 import type { Memory } from '../schemas/types';
 
 /**
@@ -83,12 +85,35 @@ async function evaluateQuery(testQuery: (typeof TEST_MEMORY_QUERIES)[0]) {
 
 describe('Memory Retrieval Quality Evaluation', () => {
   beforeAll(async () => {
-    // Check if test data exists
+    // Check if test data exists; seed automatically if missing
     const count = await db('memories').where('user_id', TEST_USER_ID).count('* as count').first();
     if (!count || Number(count.count) === 0) {
-      throw new Error('No memory test data found. Run: npm run test:seed:memories');
+      console.log('[memoryRetrieval] Seeding test memories...');
+      const now = Date.now();
+
+      for (const mem of TEST_MEMORIES) {
+        const createdAt = new Date(now - mem.daysAgo * 86400000);
+        const embedding = await defaultEmbedding.embedText(mem.content, 'document');
+
+        await MemoryStore.addMemory(
+          {
+            content: mem.content,
+            type: mem.type,
+            confidence: mem.confidence,
+            user_id: TEST_USER_ID,
+          },
+          embedding
+        );
+
+        await db('memories')
+          .where('user_id', TEST_USER_ID)
+          .where('content', mem.content)
+          .update({ created_at: createdAt });
+      }
+
+      console.log(`[memoryRetrieval] Seeded ${TEST_MEMORIES.length} test memories.`);
     }
-  });
+  }, 60_000);
 
   afterAll(async () => {
     await db.destroy();

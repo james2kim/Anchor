@@ -212,7 +212,7 @@ export const DocumentUtil = {
   async retrieveRelevantChunks(
     store: DocumentStore,
     input: {
-      queryEmbedding: number[];
+      queryEmbedding?: number[];
       user_id: string;
       topK?: number;
       userQuery: string;

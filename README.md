@@ -10,6 +10,7 @@ A conversational AI study assistant with persistent memory, document RAG, and in
 - **Smart Retrieval** - Hybrid Rule-Based and LLM-powered retrieval gate that decides when to search documents vs. memories vs. neither
 - **React Web UI** - Mobile-responsive chat interface with document upload and markdown rendering
 - **User Authentication** - Clerk-based auth with automatic user provisioning and per-user data isolation
+- **Production Resilience** - Rate limiting, retry with exponential backoff on external APIs, and graceful fallback to keyword-only search when embeddings are unavailable
 
 ## Architecture Overview
 
@@ -294,7 +295,21 @@ This reduces cost and latency for ~70% of queries while preserving quality for c
 
 Sources cite document titles (e.g., `[Source: Resume.pdf]`) instead of opaque chunk indices, making responses more useful.
 
-### 10. Authentication with Clerk
+### 10. Production Resilience
+
+Three layers protect against transient external API failures:
+
+**Rate Limiting**: Express middleware limits each user to a fixed request rate on `/api/chat` and `/api/upload`, preventing abuse and runaway costs.
+
+**Retry with Exponential Backoff**: All LLM (Anthropic) and embedding (VoyageAI) calls are wrapped in a generic `withRetry` utility. On transient failures (429, 5xx, network errors), requests retry up to 3 times with exponential backoff and jitter (~1s, ~2s, ~4s). Auth errors (401/403) and bad requests (400) fail immediately.
+
+**Embedding Fallback**: If the embedding API fails even after retries, the retrieval pipeline degrades gracefully instead of returning empty results:
+- Document search falls back to keyword-only (PostgreSQL full-text search)
+- Profile memories (preferences, facts) are still retrieved (no embedding needed)
+- Contextual memories (goals, decisions) are skipped since they require similarity search
+- The `embeddingFallback` flag is captured in trace metadata for observability
+
+### 11. Authentication with Clerk
 
 Authentication is handled by Clerk, a managed auth service. This was chosen over building custom auth because:
 - Not the focus of this project (learning agent architecture, not auth)
@@ -363,7 +378,8 @@ Authentication is handled by Clerk, a managed auth service. This was chosen over
     ├── util/
     │   ├── DocumentUtil.ts      # Text chunking
     │   ├── TemporalUtil.ts      # Date range extraction
-    │   └── EmbeddingUtil.ts     # Vector formatting
+    │   ├── EmbeddingUtil.ts     # Vector formatting
+    │   └── RetryUtil.ts         # Retry with exponential backoff
     │
     ├── schemas/
     │   └── types.ts             # Zod schemas and TypeScript types
