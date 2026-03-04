@@ -2,6 +2,8 @@ import dotenv from 'dotenv';
 dotenv.config({ path: '.env.local' });
 
 import express from 'express';
+import helmet from 'helmet';
+import cors from 'cors';
 import multer from 'multer';
 import crypto from 'crypto';
 import path from 'path';
@@ -107,19 +109,61 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT ?? 3000;
+const isProduction = process.env.NODE_ENV === 'production';
 
 // Middleware
+
+// Security headers
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", 'https://*.clerk.accounts.dev'],
+        styleSrc: ["'self'", "'unsafe-inline'", 'https://*.clerk.accounts.dev'],
+        imgSrc: ["'self'", 'data:', 'https://*.clerk.accounts.dev', 'https://img.clerk.com'],
+        connectSrc: ["'self'", 'https://*.clerk.accounts.dev'],
+        frameSrc: ["'self'", 'https://*.clerk.accounts.dev'],
+        fontSrc: ["'self'", 'https://*.clerk.accounts.dev'],
+        workerSrc: ["'self'", 'blob:'],
+      },
+    },
+  })
+);
+
+// CORS — same-origin in production, allow Vite dev server in development
+const allowedOrigins = isProduction
+  ? [] // same-origin only; no cross-origin needed
+  : ['http://localhost:3000', 'http://localhost:5173', 'http://localhost:5174'];
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow same-origin requests (origin is undefined) and allowed origins
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
+    credentials: true,
+    exposedHeaders: ['X-RateLimit-Limit', 'X-RateLimit-Remaining'],
+  })
+);
+
 app.use(express.json());
 app.use(clerkMiddleware());
 app.use(express.static(path.join(__dirname, '../public')));
 
-// Configure multer for file uploads
-const upload = multer({ storage: multer.memoryStorage() });
+// Configure multer for file uploads (10 MB limit)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+});
 
 // Rate limiting (production only)
 const DAILY_CHAT_LIMIT = 40;
 const RATE_LIMIT_TTL = 86400; // 24 hours in seconds
-const isProduction = process.env.NODE_ENV === 'production';
 
 async function checkRateLimit(userId: string): Promise<{ allowed: boolean; remaining: number }> {
   if (!isProduction) return { allowed: true, remaining: DAILY_CHAT_LIMIT };
@@ -222,6 +266,10 @@ app.post('/api/chat', requireAuth(), async (req, res) => {
 
     if (!message || typeof message !== 'string') {
       return res.status(400).json({ error: 'Message is required' });
+    }
+
+    if (message.length > 10_000) {
+      return res.status(400).json({ error: 'Message too long (max 10,000 characters)' });
     }
 
     // Get or create user and session

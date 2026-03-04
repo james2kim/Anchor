@@ -145,14 +145,10 @@ export class DocumentStore {
   ) {
     const k = trx ?? this.knex;
 
-    // Convert query to tsquery (handles multiple words with OR)
-    // "context middle" -> "context | middle"
-    const tsQuery = input.query
-      .split(/\s+/)
-      .filter((w) => w.length > 2)
-      .join(' | ');
+    // Use plainto_tsquery for safe, injection-free full-text search
+    const plainQuery = input.query.trim();
 
-    if (!tsQuery) return [];
+    if (!plainQuery) return [];
 
     let query = k('chunks')
       .join('documents', 'chunks.document_id', 'documents.id')
@@ -170,8 +166,8 @@ export class DocumentStore {
         'documents.title as document_title',
         'documents.source as document_source',
       ])
-      .select(k.raw("ts_rank(chunks.search_vector, to_tsquery('english', ?)) AS rank", [tsQuery]))
-      .whereRaw("chunks.search_vector @@ to_tsquery('english', ?)", [tsQuery])
+      .select(k.raw("ts_rank(chunks.search_vector, plainto_tsquery('english', ?)) AS rank", [plainQuery]))
+      .whereRaw("chunks.search_vector @@ plainto_tsquery('english', ?)", [plainQuery])
       .andWhere('chunks.user_id', '=', input.user_id);
 
     // Apply temporal filter if year is specified

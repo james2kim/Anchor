@@ -1,4 +1,5 @@
-import { formatMarkdown } from '../utils/formatMarkdown';
+import ReactMarkdown from 'react-markdown';
+import DOMPurify from 'dompurify';
 
 interface ChatMessageProps {
   content: string;
@@ -6,10 +7,11 @@ interface ChatMessageProps {
 }
 
 export function ChatMessage({ content, role }: ChatMessageProps) {
+  const sanitized = DOMPurify.sanitize(content);
+
   return (
-    <div
-      className={`message ${role}`}
-      dangerouslySetInnerHTML={{ __html: formatMarkdown(content) }}
-    />
+    <div className={`message ${role}`}>
+      <ReactMarkdown>{sanitized}</ReactMarkdown>
+    </div>
   );
 }
