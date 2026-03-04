@@ -1,0 +1,10 @@
+node_modules
+frontend/node_modules
+dist
+.env*
+.git
+*.md
+src/__tests__
+src/evals
+vitest.config.ts
+eslint.config.mjs

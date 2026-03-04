@@ -3,6 +3,7 @@
 /frontend/node_modules
 
 # build output
+/dist
 /public
 
 # env files
@@ -25,3 +26,8 @@ memory.sqlite
 # IDE
 .vscode/
 .idea/
+
+# Firebase
+.firebase/
+.firebaserc
+firebase-debug.log*

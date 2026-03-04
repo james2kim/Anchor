@@ -131,9 +131,9 @@ app.use(
   })
 );
 
-// CORS — same-origin in production, allow Vite dev server in development
+// CORS
 const allowedOrigins = isProduction
-  ? [] // same-origin only; no cross-origin needed
+  ? ['https://anchor-cd21e.web.app', 'https://anchor-cd21e.firebaseapp.com', 'https://anchoragent.dev', 'https://www.anchoragent.dev']
   : ['http://localhost:3000', 'http://localhost:5173', 'http://localhost:5174'];
 
 app.use(
