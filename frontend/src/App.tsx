@@ -33,8 +33,8 @@ function App() {
       <SignedOut>
         <div className="auth-container">
           <div className="auth-card">
-            <h2>Welcome to Study Assistant</h2>
-            <p>Sign in to start chatting with your AI study assistant.</p>
+            <h2>Welcome to Anchor</h2>
+            <p>Your AI-powered study companion. Upload documents, ask questions, and learn smarter.</p>
             <SignInButton mode="modal">
               <button className="primary">Sign In</button>
             </SignInButton>
