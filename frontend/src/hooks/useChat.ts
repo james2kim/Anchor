@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@clerk/clerk-react';
-import { sendMessage, uploadFile, getSession, parseSessionMessage, type RateLimitInfo } from '../api/client';
+import { sendMessage, uploadFileSmart, getSession, parseSessionMessage, type RateLimitInfo } from '../api/client';
 
 export interface Message {
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
+  loading?: boolean;
 }
 
 export function useChat() {
@@ -77,13 +78,42 @@ export function useChat() {
 
   const handleUpload = useCallback(
     async (file: File) => {
-      addMessage('system', `Uploading: ${file.name}...`);
+      const statusMsg = addMessage('system', `Uploading: ${file.name}...`);
+      setMessages((prev) =>
+        prev.map((m) => (m.id === statusMsg.id ? { ...m, loading: true } : m))
+      );
 
       try {
-        const response = await uploadFile(file, getToken);
-        addMessage('system', `Uploaded "${response.filename}" - ${response.chunkCount} chunks ingested.`);
+        const response = await uploadFileSmart(
+          file,
+          getToken,
+          undefined,
+          () => {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === statusMsg.id
+                  ? { ...m, content: `Processing document: ${file.name}...`, loading: true }
+                  : m
+              )
+            );
+          }
+        );
+
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === statusMsg.id
+              ? { ...m, content: `Uploaded "${response.filename}" - ${response.chunkCount} chunks ingested.`, loading: false }
+              : m
+          )
+        );
       } catch (err) {
-        addMessage('system', err instanceof Error ? err.message : 'Upload failed. Please try again.');
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === statusMsg.id
+              ? { ...m, content: err instanceof Error ? err.message : 'Upload failed. Please try again.', loading: false }
+              : m
+          )
+        );
       }
     },
     [addMessage, getToken]

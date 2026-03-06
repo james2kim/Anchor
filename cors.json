@@ -1,0 +1,13 @@
+[
+  {
+    "origin": [
+      "https://anchor-cd21e.web.app",
+      "https://anchoragent.dev",
+      "http://localhost:3000",
+      "http://localhost:5173"
+    ],
+    "method": ["PUT"],
+    "responseHeader": ["Content-Type"],
+    "maxAgeSeconds": 3600
+  }
+]

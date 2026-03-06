@@ -46,7 +46,7 @@ function App() {
         <div className="container">
           <div className="messages">
             {messages.map((msg) => (
-              <ChatMessage key={msg.id} content={msg.content} role={msg.role} />
+              <ChatMessage key={msg.id} content={msg.content} role={msg.role} loading={msg.loading} />
             ))}
             {isLoading && <ThinkingIndicator />}
             <div ref={messagesEndRef} />

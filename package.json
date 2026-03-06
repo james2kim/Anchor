@@ -15,7 +15,7 @@
     "format": "prettier --write src/",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:unit": "vitest run src/__tests__/documentUtil.test.ts src/__tests__/utilTests.test.ts src/__tests__/memoryUtil.test.ts",
+    "test:unit": "vitest run src/__tests__/documentUtil.test.ts src/__tests__/utilTests.test.ts src/__tests__/memoryUtil.test.ts src/__tests__/safeFetchJson.test.ts src/__tests__/ingestBatching.test.ts src/__tests__/embedBatch.test.ts",
     "test:smoke": "vitest run src/__tests__/smoke.test.ts",
     "test:retrieval": "vitest run src/__tests__/retrieval.test.ts",
     "test:retrieval:memory": "vitest run src/__tests__/memoryRetrieval.test.ts",
@@ -31,6 +31,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.2",
     "@clerk/express": "^1.7.76",
+    "@google-cloud/storage": "^7.19.0",
     "@langchain/anthropic": "1.3.12",
     "@langchain/community": "^1.1.15",
     "@langchain/core": "1.1.17",

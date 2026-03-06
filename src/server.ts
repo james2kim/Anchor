@@ -24,6 +24,12 @@ import { runBackgroundSummarization, runBackgroundExtraction } from './agent/bac
 import { MAX_MESSAGES } from './agent/constants';
 import { LangSmithUtil } from './util/LangSmithUtil';
 import { TitleExtractor } from './util/TitleExtractor';
+import {
+  generateSignedUploadUrl,
+  downloadAsBuffer,
+  deleteFile,
+  fileExists,
+} from './util/GcsUtil';
 import type { AgentTrace } from './schemas/types';
 
 // Supported file types
@@ -122,7 +128,7 @@ app.use(
         scriptSrc: ["'self'", 'https://*.clerk.accounts.dev'],
         styleSrc: ["'self'", "'unsafe-inline'", 'https://*.clerk.accounts.dev'],
         imgSrc: ["'self'", 'data:', 'https://*.clerk.accounts.dev', 'https://img.clerk.com'],
-        connectSrc: ["'self'", 'https://*.clerk.accounts.dev'],
+        connectSrc: ["'self'", 'https://*.clerk.accounts.dev', 'https://storage.googleapis.com'],
         frameSrc: ["'self'", 'https://*.clerk.accounts.dev'],
         fontSrc: ["'self'", 'https://*.clerk.accounts.dev'],
         workerSrc: ["'self'", 'blob:'],
@@ -155,10 +161,10 @@ app.use(express.json());
 app.use(clerkMiddleware());
 app.use(express.static(path.join(__dirname, '../public')));
 
-// Configure multer for file uploads (10 MB limit)
+// Configure multer for file uploads
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 },
+  limits: { fileSize: 100 * 1024 * 1024 },
 });
 
 // Rate limiting (production only)
@@ -348,7 +354,17 @@ app.post('/api/chat', requireAuth(), async (req, res) => {
 });
 
 // POST /api/upload - Upload a document for ingestion
-app.post('/api/upload', requireAuth(), upload.single('file'), async (req, res) => {
+app.post('/api/upload', requireAuth(), (req, res, next) => {
+  upload.single('file')(req, res, (err) => {
+    if (err) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).json({ error: 'File too large. Maximum size is 100 MB.' });
+      }
+      return res.status(400).json({ error: err.message });
+    }
+    next();
+  });
+}, async (req, res) => {
   try {
     const { userId: clerkUserId } = getAuth(req);
     if (!clerkUserId) {
@@ -415,6 +431,245 @@ app.post('/api/upload', requireAuth(), upload.single('file'), async (req, res) =
     console.error('Error in /api/upload:', err);
     const message = err instanceof Error ? err.message : 'Failed to process upload';
     res.status(500).json({ error: message });
+  }
+});
+
+// POST /api/upload/signed-url - Generate a signed URL for direct GCS upload
+app.post('/api/upload/signed-url', requireAuth(), async (req, res) => {
+  try {
+    const { userId: clerkUserId } = getAuth(req);
+    if (!clerkUserId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const { filename, contentType, fileSize } = req.body;
+
+    if (!filename || typeof filename !== 'string') {
+      return res.status(400).json({ error: 'filename is required' });
+    }
+    if (!contentType || typeof contentType !== 'string') {
+      return res.status(400).json({ error: 'contentType is required' });
+    }
+
+    // Validate file extension
+    const ext = path.extname(filename).toLowerCase();
+    if (!SUPPORTED_EXTENSIONS.includes(ext)) {
+      return res.status(400).json({
+        error: `Unsupported file type. Supported formats: ${SUPPORTED_EXTENSIONS.join(', ')}`,
+      });
+    }
+
+    // Validate content type
+    if (!SUPPORTED_MIMETYPES.includes(contentType)) {
+      return res.status(400).json({
+        error: `Unsupported content type: ${contentType}`,
+      });
+    }
+
+    // Validate file size (max 100 MB)
+    const MAX_FILE_SIZE = 100 * 1024 * 1024;
+    if (fileSize && typeof fileSize === 'number' && fileSize > MAX_FILE_SIZE) {
+      return res.status(400).json({ error: 'File too large. Maximum size is 100 MB.' });
+    }
+
+    const userId = await getOrCreateUser(clerkUserId);
+    const fileId = crypto.randomUUID();
+
+    const { signedUrl, gcsPath } = await generateSignedUploadUrl({
+      userId,
+      fileId,
+      filename,
+      contentType,
+    });
+
+    res.json({ signedUrl, fileId, gcsPath });
+  } catch (err) {
+    console.error('Error in /api/upload/signed-url:', err);
+    res.status(500).json({ error: 'Failed to generate signed URL' });
+  }
+});
+
+// Shared file processing logic (used by both sync and async paths)
+async function processGcsFile(
+  userId: string,
+  gcsPath: string,
+  filename: string
+): Promise<{ documentId: string; chunkCount: number; filename: string; title: string }> {
+  const buffer = await downloadAsBuffer(gcsPath);
+
+  const ext = path.extname(filename).toLowerCase();
+  const mimeMap: Record<string, string> = {
+    '.pdf': 'application/pdf',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.doc': 'application/msword',
+    '.md': 'text/markdown',
+    '.txt': 'text/plain',
+  };
+  const mimetype = mimeMap[ext] || 'application/octet-stream';
+
+  const { text: textContent, pdfTitle } = await extractTextFromFile(buffer, filename, mimetype);
+
+  if (!textContent || textContent.trim().length === 0) {
+    await deleteFile(gcsPath).catch(() => {});
+    throw new Error('Could not extract text from file. The file may be empty or corrupted.');
+  }
+
+  const extractedTitle = pdfTitle || TitleExtractor.extractTitle(textContent, filename);
+  console.log(`[upload/process] Title: "${extractedTitle}" (from PDF metadata: ${!!pdfTitle})`);
+
+  const result = await ingestDocument(
+    db,
+    { documents: documentStore },
+    {
+      source: filename,
+      title: extractedTitle,
+      text: textContent,
+      metadata: {
+        uploadedAt: new Date().toISOString(),
+        originalName: filename,
+        mimeType: mimetype,
+        fileType: ext,
+      },
+    },
+    userId
+  );
+
+  await deleteFile(gcsPath).catch((err) =>
+    console.error('[upload/process] Failed to delete GCS file:', err)
+  );
+
+  return { documentId: result.documentId, chunkCount: result.chunkCount, filename, title: extractedTitle };
+}
+
+// Background job processing for large file uploads (production only)
+const JOB_TTL = 3600; // 1 hour
+
+async function processFileInBackground(
+  jobId: string,
+  userId: string,
+  gcsPath: string,
+  filename: string
+): Promise<void> {
+  const redis = RedisSessionStore.getClient();
+  const jobKey = `job:${jobId}`;
+
+  try {
+    const result = await processGcsFile(userId, gcsPath, filename);
+    await redis.set(
+      jobKey,
+      JSON.stringify({ status: 'completed', userId, result }),
+      { EX: JOB_TTL }
+    );
+    console.log(`[upload/process] Job ${jobId} completed successfully`);
+  } catch (err) {
+    console.error(`[upload/process] Job ${jobId} failed:`, err);
+    const message = err instanceof Error ? err.message : 'Failed to process upload';
+    await redis.set(
+      jobKey,
+      JSON.stringify({ status: 'failed', userId, error: message }),
+      { EX: JOB_TTL }
+    ).catch(() => {});
+  }
+}
+
+// POST /api/upload/process - Process a file already uploaded to GCS
+// Production: async with polling (avoids Firebase 60s timeout)
+// Development: synchronous (no timeout issue locally)
+app.post('/api/upload/process', requireAuth(), async (req, res) => {
+  try {
+    const { userId: clerkUserId } = getAuth(req);
+    if (!clerkUserId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const { fileId, gcsPath, filename } = req.body;
+
+    if (!fileId || typeof fileId !== 'string') {
+      return res.status(400).json({ error: 'fileId is required' });
+    }
+    if (!gcsPath || typeof gcsPath !== 'string') {
+      return res.status(400).json({ error: 'gcsPath is required' });
+    }
+    if (!filename || typeof filename !== 'string') {
+      return res.status(400).json({ error: 'filename is required' });
+    }
+
+    const userId = await getOrCreateUser(clerkUserId);
+
+    // Security: ensure the gcsPath belongs to this user
+    const expectedPrefix = `uploads/${userId}/`;
+    if (!gcsPath.startsWith(expectedPrefix)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    // Verify the file exists in GCS
+    const exists = await fileExists(gcsPath);
+    if (!exists) {
+      return res.status(404).json({ error: 'File not found in storage. It may have expired.' });
+    }
+
+    if (isProduction) {
+      // Async path: return immediately, process in background
+      const jobId = crypto.randomUUID();
+      const redis = RedisSessionStore.getClient();
+      await redis.set(
+        `job:${jobId}`,
+        JSON.stringify({ status: 'processing', userId }),
+        { EX: JOB_TTL }
+      );
+
+      processFileInBackground(jobId, userId, gcsPath, filename).catch((err) =>
+        console.error(`[upload/process] Unhandled error in job ${jobId}:`, err)
+      );
+
+      res.json({ jobId, status: 'processing' });
+    } else {
+      // Sync path: process directly and return result (no Firebase timeout locally)
+      const result = await processGcsFile(userId, gcsPath, filename);
+      res.json(result);
+    }
+  } catch (err) {
+    console.error('Error in /api/upload/process:', err);
+    const message = err instanceof Error ? err.message : 'Failed to process upload';
+    res.status(500).json({ error: message });
+  }
+});
+
+// GET /api/upload/status/:jobId - Check processing job status
+app.get('/api/upload/status/:jobId', requireAuth(), async (req, res) => {
+  try {
+    const { userId: clerkUserId } = getAuth(req);
+    if (!clerkUserId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    res.set('Cache-Control', 'no-store');
+
+    const { jobId } = req.params;
+    const userId = await getOrCreateUser(clerkUserId);
+    const redis = RedisSessionStore.getClient();
+
+    const jobRaw = await redis.get(`job:${jobId}`);
+    if (!jobRaw) {
+      return res.status(404).json({ error: 'Job not found or expired' });
+    }
+
+    const job = JSON.parse(jobRaw);
+
+    if (job.userId !== userId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    if (job.status === 'completed') {
+      return res.json({ status: 'completed', result: job.result });
+    } else if (job.status === 'failed') {
+      return res.json({ status: 'failed', error: job.error });
+    } else {
+      return res.json({ status: 'processing' });
+    }
+  } catch (err) {
+    console.error('Error in /api/upload/status:', err);
+    res.status(500).json({ error: 'Failed to check job status' });
   }
 });
 

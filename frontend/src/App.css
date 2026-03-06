@@ -123,6 +123,23 @@ header h1 {
   max-width: 100%;
 }
 
+.message-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.message-spinner {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(102, 102, 102, 0.25);
+  border-top-color: #666;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
 .rate-limit-alert {
   background: #fef3cd;
   color: #856404;
@@ -336,6 +353,12 @@ button.secondary:disabled {
   }
   40% {
     transform: scale(1);
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 

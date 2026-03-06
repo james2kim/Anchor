@@ -10,6 +10,7 @@ A conversational AI study assistant with persistent memory, document RAG, and in
 - **Smart Retrieval** - Hybrid Rule-Based and LLM-powered retrieval gate that decides when to search documents vs. memories vs. neither
 - **React Web UI** - Mobile-responsive chat interface with document upload and markdown rendering
 - **User Authentication** - Clerk-based auth with automatic user provisioning and per-user data isolation
+- **Large File Upload** - Files over 25 MB bypass Firebase limits via signed URL upload to GCS with async processing and polling
 - **Production Resilience** - Rate limiting, retry with exponential backoff on external APIs, and graceful fallback to keyword-only search when embeddings are unavailable
 
 ## Architecture Overview
@@ -343,6 +344,181 @@ Authentication is handled by Clerk, a managed auth service. This was chosen over
 4. `getOrCreateUser()` finds or creates a user record in PostgreSQL linked to the Clerk ID
 5. All data (memories, documents, sessions) is scoped to the authenticated user
 
+## File Upload Pipeline
+
+File upload has three constraints in production: Firebase's **32 MB request body limit**, Firebase's **60-second request timeout**, and Voyage AI's **rate limit** on embedding calls. The upload pipeline addresses all three.
+
+### Upload Routing — `uploadFileSmart`
+
+The frontend decides which path to take based on file size and environment:
+
+| Condition | Path | Why |
+|-----------|------|-----|
+| `file.size > 100 MB` | Reject | Hard cap |
+| Local dev (any size) | Direct upload to `/api/upload` | No GCS credentials locally |
+| Production, ≤ 25 MB | Direct upload to `/api/upload` | Fits within Firebase's 32 MB limit (with multipart overhead) |
+| Production, > 25 MB | Signed URL → GCS → async processing | Bypasses Firebase entirely |
+
+### Large File Path (> 25 MB in Production)
+
+```
+Browser                          Cloud Run                            GCS                    Voyage AI
+   |                                |                                  |                        |
+   |-- POST /api/upload/signed-url ->|                                  |                        |
+   |   {filename, type, size}        |                                  |                        |
+   |                                 |-- generateSignedUploadUrl ------>|                        |
+   |<-- {signedUrl, fileId, gcsPath} |                                  |                        |
+   |                                 |                                  |                        |
+   |-- PUT signedUrl (file bytes) ---|----------(bypasses server)------>|  stored in GCS         |
+   |   [XHR progress events → UI]    |                                  |                        |
+   |                                 |                                  |                        |
+   |-- POST /api/upload/process ---->|                                  |                        |
+   |   {fileId, gcsPath, filename}   |-- Redis: job='processing' ------>|                        |
+   |<-- {jobId, status: 'processing'}|                                  |                        |
+   |                                 |-- downloadAsBuffer ------------>|                        |
+   |   [UI: "Processing..."]         |<-- file buffer -----------------|                        |
+   |                                 |-- extractText (PDFLoader)        |                        |
+   |                                 |-- chunkText → N chunks           |                        |
+   |                                 |-- embedBatch (64/call) ---------|----------------------->|
+   |                                 |<-- embeddings ------------------|------------------------|
+   |                                 |   ... repeat batches ...         |                        |
+   |                                 |-- upsertChunks (DB)              |                        |
+   |                                 |-- deleteFile from GCS ---------->|  cleaned up            |
+   |                                 |-- Redis: job='completed'         |                        |
+   |                                 |                                  |                        |
+   |-- GET /api/upload/status/{id} ->|                                  |                        |
+   |<-- {status:'completed', result} |                                  |                        |
+   |                                 |                                  |                        |
+   |   [UI: "Uploaded — N chunks ingested."]                            |                        |
+```
+
+### Step-by-Step Breakdown
+
+**1. Signed URL Generation** (`POST /api/upload/signed-url` → `GcsUtil.generateSignedUploadUrl`)
+
+The backend generates a V4 signed URL scoped to `uploads/{userId}/{fileId}/{filename}`. The URL is a pre-authenticated PUT endpoint on `storage.googleapis.com` that expires in 30 minutes. The userId in the path provides per-user isolation.
+
+**2. Direct-to-GCS Upload** (`uploadToGcs` in `client.ts`)
+
+The browser PUTs the file directly to the signed URL. This uses `XMLHttpRequest` instead of `fetch` because XHR supports `upload.progress` events — fetch does not. For a 50 MB file over a slow connection, the user sees a real progress bar.
+
+Two infrastructure requirements:
+- **GCS CORS** (`cors.json`): The bucket must allow PUT from the app's origins, otherwise the browser's preflight OPTIONS request fails
+- **CSP header** (`helmet` config): `connectSrc` must include `https://storage.googleapis.com`, otherwise the Content Security Policy blocks the XHR
+
+**3. Async Processing** (`POST /api/upload/process`)
+
+After the file lands in GCS, the frontend tells the backend to process it. In production, the backend:
+1. Creates a job ID, stores `{ status: 'processing' }` in Redis (1-hour TTL)
+2. Returns `{ jobId, status: 'processing' }` immediately (< 100ms)
+3. Processes the file in the background (same Node process, fire-and-forget)
+
+This avoids Firebase's 60-second timeout — the HTTP response is already sent before heavy processing begins.
+
+Security: the endpoint verifies `gcsPath.startsWith('uploads/{userId}/')` so users can't reference other users' files, and checks `fileExists` in GCS before processing.
+
+In development, processing is synchronous (returns the result directly) since there's no Firebase timeout locally.
+
+**4. Polling** (`processUploadedFile` in `client.ts`)
+
+The frontend detects the async path when the response contains a `jobId`, then polls `GET /api/upload/status/{jobId}` every 3 seconds:
+
+| Poll Result | Action |
+|-------------|--------|
+| `status: 'processing'` | Continue polling |
+| `status: 'completed'` | Return the result |
+| `status: 'failed'` | Throw with error message |
+| Auth redirect / non-API URL | Skip this poll, retry next (token may have expired) |
+| 10-minute deadline exceeded | Throw "timed out" |
+
+Auth resilience: Clerk tokens can expire during a long processing job. The polling loop catches `Session expired` errors and continues — `getToken` refreshes the token on the next iteration.
+
+**5. File Processing** (`processGcsFile` in `server.ts`)
+
+1. Downloads the file from GCS into a Node.js Buffer
+2. Extracts text using LangChain loaders (PDFLoader, DocxLoader, or raw UTF-8)
+3. Extracts title from PDF metadata → content heuristics → cleaned filename
+4. Calls `ingestDocument` (chunking + embedding + storage)
+5. Deletes the file from GCS (data is in the database now)
+
+### Batched Embedding — `ingestDocument`
+
+The old approach called `embedText()` once per chunk — 200 API calls for a 200-chunk document, which hit Voyage AI's rate limit and took 60+ seconds. The batched approach:
+
+| Chunks | Batch Size | API Calls | Improvement |
+|--------|-----------|-----------|-------------|
+| 10 | 64 | 1 | 10x fewer |
+| 200 | 64 | 4 (sizes: 64, 64, 64, 8) | 50x fewer |
+
+Voyage AI supports up to 128 texts per batch call. We use 64 to stay under RPM limits with retries. A 500ms pause between batches provides additional rate limit headroom.
+
+Each batch call is wrapped in `withRetry` with aggressive settings: 5 attempts, 2-second base delay, exponential backoff with jitter. The retry utility only retries transient errors (429, 5xx, network failures) — not auth or bad request errors.
+
+### Safe Response Parsing — `safeFetchJson`
+
+Every `fetch` call in the frontend parses responses through `safeFetchJson`, which handles the cases where Firebase/Cloud Run returns HTML instead of JSON:
+
+| Response State | Result |
+|----------------|--------|
+| `response.redirected` or URL not `/api/` | Throws "Session expired" (Clerk auth redirect) |
+| OK + valid JSON | Returns parsed data |
+| OK + HTML body | Throws "Unexpected response from server" |
+| Error (5xx) + JSON body | Returns parsed error (so frontend can show backend's message) |
+| Error (5xx) + HTML body | Throws "Server error (502)" |
+
+### Configuration
+
+| Constant | Location | Value | Purpose |
+|----------|----------|-------|---------|
+| `LARGE_FILE_THRESHOLD` | `client.ts` | 25 MB | Files above this use the GCS path |
+| `MAX_FILE_SIZE` | `client.ts` | 100 MB | Hard reject above this |
+| `POLL_INTERVAL_MS` | `client.ts` | 3,000 ms | Polling frequency |
+| `POLL_TIMEOUT_MS` | `client.ts` | 10 min | Max wait before "timed out" |
+| `EMBED_BATCH_SIZE` | `ingestDocument.ts` | 64 | Texts per Voyage AI call |
+| `BATCH_DELAY_MS` | `ingestDocument.ts` | 500 ms | Pause between batches |
+| `JOB_TTL` | `server.ts` | 3,600 s | Redis job key expiration |
+
+## Scaling Roadmap
+
+The current synchronous architecture is optimized for simplicity and low latency at moderate scale. Here's how it would evolve for 10k+ concurrent users:
+
+### Current: Synchronous Request-Response
+
+```
+User → Express API → LLM call (5-15s) → DB query → Response
+```
+
+Each request holds a connection for the full LLM duration. This is optimal for latency but limits throughput — each Cloud Run instance can only handle a handful of concurrent requests.
+
+### Phase 1: Job Queue + Workers
+
+```
+User → Express API → Push to Queue → Return "accepted" (50ms)
+                          ↓
+                    Worker Process → LLM call → DB query → Write result
+                          ↓
+                    Redis Pub/Sub → SSE push to client
+```
+
+**Key changes:**
+- **BullMQ** (backed by existing Redis) handles job queuing with automatic retries and prioritization
+- **Worker service** runs as a separate Cloud Run service, scaled independently from the API
+- **Server-Sent Events (SSE)** push responses back to the client in real-time
+- API response time drops from seconds to milliseconds, allowing one instance to handle thousands of requests
+
+**Why this helps:** The API server is no longer blocked waiting on LLM responses. Workers stay 100% utilized processing jobs, and the queue naturally buffers traffic spikes and LLM rate limits.
+
+### Phase 2: Connection Pooling + Read Replicas
+
+At high read volume, the database becomes the bottleneck:
+- **PgBouncer** for connection pooling (reduce per-connection overhead)
+- **Read replicas** for embedding search queries (separate read/write traffic)
+- **Redis caching** for frequently accessed memories and user profiles
+
+### Why Not Now
+
+The synchronous architecture gives the best latency for the current scale and is simpler to debug and monitor. The queue adds ~50-100ms of overhead per request and introduces eventual consistency. The migration path is straightforward since the heavy logic (`getFormattedAnswerToUserinput`) is already isolated and can be moved into a worker with minimal refactoring.
+
 ## Project Structure
 
 ```
@@ -399,6 +575,7 @@ Authentication is handled by Clerk, a managed auth service. This was chosen over
     │   ├── DocumentUtil.ts      # Text chunking
     │   ├── TemporalUtil.ts      # Date range extraction
     │   ├── EmbeddingUtil.ts     # Vector formatting
+    │   ├── GcsUtil.ts           # GCS signed URLs, download, delete
     │   └── RetryUtil.ts         # Retry with exponential backoff
     │
     ├── schemas/
@@ -449,6 +626,10 @@ DATABASE_URL=postgresql://localhost:5432/study_agent
 # Clerk Authentication (get keys from https://dashboard.clerk.com)
 CLERK_PUBLISHABLE_KEY=pk_test_...
 CLERK_SECRET_KEY=sk_test_...
+
+# GCS Upload (production only — large file uploads bypass Firebase via signed URLs)
+GCS_UPLOAD_BUCKET=your-bucket-name
+# GCS credentials are provided via GOOGLE_APPLICATION_CREDENTIALS or Cloud Run's default service account
 ```
 
 **Frontend environment variables (frontend/.env.local):**
@@ -516,11 +697,39 @@ Response: { "response": "Based on your notes...", "sessionId": "..." }
 
 ### POST /api/upload
 
-Upload a document for ingestion.
+Upload a document for ingestion (direct path, files ≤ 25 MB).
 
 ```
 Request:  FormData with file
-Response: { "documentId": "...", "chunkCount": 15 }
+Response: { "documentId": "...", "chunkCount": 15, "filename": "notes.pdf", "title": "Biology Notes" }
+```
+
+### POST /api/upload/signed-url
+
+Generate a signed URL for direct-to-GCS upload (large files > 25 MB).
+
+```json
+Request:  { "filename": "textbook.pdf", "contentType": "application/pdf", "fileSize": 52428800 }
+Response: { "signedUrl": "https://storage.googleapis.com/...", "fileId": "uuid", "gcsPath": "uploads/..." }
+```
+
+### POST /api/upload/process
+
+Trigger processing of a file already uploaded to GCS. Returns immediately in production (async).
+
+```json
+Request:  { "fileId": "uuid", "gcsPath": "uploads/...", "filename": "textbook.pdf" }
+Response: { "jobId": "uuid", "status": "processing" }
+```
+
+### GET /api/upload/status/:jobId
+
+Poll for async processing job status.
+
+```json
+Response: { "status": "completed", "result": { "documentId": "...", "chunkCount": 142 } }
+      or: { "status": "processing" }
+      or: { "status": "failed", "error": "Could not extract text..." }
 ```
 
 ### GET /api/session
@@ -883,7 +1092,7 @@ These are NOT quality evaluations — they just verify the pipeline doesn't brea
 
 ### Unit Tests
 
-Unit tests for pure utility functions run fast (~200ms) with no external dependencies.
+Unit tests run fast (~200ms) with no external dependencies. All external services are mocked.
 
 **`documentUtil.test.ts`** - 28 tests covering:
 
@@ -893,6 +1102,37 @@ Unit tests for pure utility functions run fast (~200ms) with no external depende
 | `estimateTokens`        | ~4 chars/token heuristic, empty string, rounding, whitespace handling                                |
 | `cosineSimilarity`      | Identical vectors (1.0), orthogonal (0.0), opposite (-1.0), symmetry, high-dimensional, zero vectors |
 | `removeDuplicateChunks` | High similarity removal, threshold behavior, missing embeddings                                      |
+
+**`safeFetchJson.test.ts`** - 6 tests covering:
+
+| Scenario | Expected |
+|----------|----------|
+| OK response + valid JSON | Returns parsed data |
+| OK response + HTML body | Throws "Unexpected response from server" |
+| `response.redirected = true` | Throws "Session expired" |
+| URL without `/api/` | Throws "Session expired" |
+| Error (500) + JSON body | Returns parsed error JSON |
+| Error (502) + HTML body | Throws "Server error (502)" |
+
+**`ingestBatching.test.ts`** - 5 tests covering:
+
+| Scenario | Assertion |
+|----------|-----------|
+| 10 chunks (batch size 64) | 1 `embedBatch` call |
+| 200 chunks (batch size 64) | 4 calls with sizes [64, 64, 64, 8] |
+| 0 chunks | No `embedBatch` calls, returns chunkCount 0 |
+| Embedding mapping | Each chunk gets correct embedding in `upsertChunks` |
+| Temporal extraction | `extractTemporalRange` called for every chunk, data flows to DB |
+
+**`embedBatch.test.ts`** - 5 tests covering:
+
+| Scenario | Assertion |
+|----------|-----------|
+| Empty input | Returns `[]`, no API call |
+| Single text | Calls API with `['text']`, returns 1 embedding |
+| Multiple texts | Returns correct count, passes full array to API |
+| Mismatched response count | Throws "expected N results, got M" |
+| Retry config | `withRetry` called with `maxAttempts: 5, baseDelayMs: 2000` |
 
 ### Integration Tests
 

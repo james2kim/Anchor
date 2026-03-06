@@ -26,7 +26,7 @@ export function FileUpload({ onUpload, disabled }: FileUploadProps) {
 
   return (
     <div className="upload-area">
-      <label>Upload Document (PDF, Word, Markdown, Text):</label>
+      <label>Upload Document (PDF, Word, Markdown, Text — up to 100 MB):</label>
       <input
         ref={fileInputRef}
         type="file"

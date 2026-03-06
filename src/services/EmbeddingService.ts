@@ -32,6 +32,28 @@ export class EmbeddingService {
     }
     return embedding;
   }
+
+  /**
+   * Embed multiple texts in a single API call.
+   * Voyage AI supports batching natively — far fewer API calls than one-by-one.
+   */
+  async embedBatch(
+    texts: string[],
+    inputType: 'document' | 'query' = 'document'
+  ): Promise<number[][]> {
+    if (texts.length === 0) return [];
+
+    const response = await withRetry(
+      () => this.client.embed({ input: texts, model: this.model, inputType }),
+      { label: 'embedBatch', maxAttempts: 5, baseDelayMs: 2000 }
+    );
+
+    const embeddings = response.data?.map((d) => d.embedding);
+    if (!embeddings || embeddings.length !== texts.length) {
+      throw new Error(`Embedding batch failed: expected ${texts.length} results, got ${embeddings?.length ?? 0}`);
+    }
+    return embeddings as number[][];
+  }
 }
 
 // Default instance for simple usage
