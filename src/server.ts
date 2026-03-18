@@ -169,12 +169,17 @@ const upload = multer({
 
 // Rate limiting (production only)
 const DAILY_CHAT_LIMIT = 40;
+const DAILY_UPLOAD_LIMIT = 15;
 const RATE_LIMIT_TTL = 86400; // 24 hours in seconds
 
-async function checkRateLimit(userId: string): Promise<{ allowed: boolean; remaining: number }> {
-  if (!isProduction) return { allowed: true, remaining: DAILY_CHAT_LIMIT };
+async function checkRateLimit(
+  userId: string,
+  resource: 'chat' | 'upload' = 'chat'
+): Promise<{ allowed: boolean; remaining: number }> {
+  const limit = resource === 'chat' ? DAILY_CHAT_LIMIT : DAILY_UPLOAD_LIMIT;
+  if (!isProduction) return { allowed: true, remaining: limit };
 
-  const key = `ratelimit:chat:${userId}`;
+  const key = `ratelimit:${resource}:${userId}`;
   const client = RedisSessionStore.getClient();
 
   const count = await client.incr(key);
@@ -184,8 +189,8 @@ async function checkRateLimit(userId: string): Promise<{ allowed: boolean; remai
     await client.expire(key, RATE_LIMIT_TTL);
   }
 
-  const remaining = Math.max(0, DAILY_CHAT_LIMIT - count);
-  return { allowed: count <= DAILY_CHAT_LIMIT, remaining };
+  const remaining = Math.max(0, limit - count);
+  return { allowed: count <= limit, remaining };
 }
 
 // Global state (initialized on startup)
@@ -377,6 +382,14 @@ app.post('/api/upload', requireAuth(), (req, res, next) => {
 
     const userId = await getOrCreateUser(clerkUserId);
 
+    // Upload rate limit check
+    const { allowed } = await checkRateLimit(userId, 'upload');
+    if (!allowed) {
+      return res.status(429).json({
+        error: `Daily upload limit reached (${DAILY_UPLOAD_LIMIT}/day). Please try again tomorrow.`,
+      });
+    }
+
     const { originalname, buffer, mimetype } = req.file;
     const ext = path.extname(originalname).toLowerCase();
 
@@ -442,6 +455,16 @@ app.post('/api/upload/signed-url', requireAuth(), async (req, res) => {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
+    const userId = await getOrCreateUser(clerkUserId);
+
+    // Upload rate limit check
+    const { allowed } = await checkRateLimit(userId, 'upload');
+    if (!allowed) {
+      return res.status(429).json({
+        error: `Daily upload limit reached (${DAILY_UPLOAD_LIMIT}/day). Please try again tomorrow.`,
+      });
+    }
+
     const { filename, contentType, fileSize } = req.body;
 
     if (!filename || typeof filename !== 'string') {
@@ -472,7 +495,6 @@ app.post('/api/upload/signed-url', requireAuth(), async (req, res) => {
       return res.status(400).json({ error: 'File too large. Maximum size is 100 MB.' });
     }
 
-    const userId = await getOrCreateUser(clerkUserId);
     const fileId = crypto.randomUUID();
 
     const { signedUrl, gcsPath } = await generateSignedUploadUrl({
