@@ -161,6 +161,7 @@ export const retrievalGateAssessmentSchema = z.object({
     'conversational',
     'off_topic',
     'unclear',
+    'workflow',
   ]),
   referencesPersonalContext: z.boolean(),
   reasoning: z.string(),
@@ -176,6 +177,9 @@ export const retrievalGateDecisionSchema = z.object({
   needsClarification: z
     .boolean()
     .describe('Whether the query is too ambiguous and needs clarification'),
+  needsWorkflow: z
+    .boolean()
+    .describe('Whether the query requires a workflow execution'),
   reasoning: z.string().max(500).describe('Brief explanation of the decision'),
 });
 
@@ -298,6 +302,8 @@ export const AgentStateSchema = new StateSchema({
     })
     .optional(),
   trace: agentTraceSchema.optional(),
+  matchedWorkflowTool: z.string().optional(),
+  workflowData: z.unknown().optional(),
 });
 
 // ============================================================================

@@ -26,7 +26,7 @@ export const retrievalGate = async (state: AgentState) => {
 
   const queryForProcessing = rewrittenQuery;
 
-  const [assessment, queryEmbedding] = await Promise.all([
+  const [assessorResult, queryEmbedding] = await Promise.all([
     retrievalGateAssessor(queryForProcessing),
     defaultEmbedding.embedText(queryForProcessing, 'query').catch((err) => {
       console.warn('[retrievalGate] Embedding failed, falling back to keyword-only:', err instanceof Error ? err.message : err);
@@ -34,6 +34,7 @@ export const retrievalGate = async (state: AgentState) => {
     }),
   ]);
 
+  const { assessment, matchedWorkflowTool } = assessorResult;
   const decision = retrievalGatePolicy(assessment);
 
   const skipRetrieval = !decision.shouldRetrieveDocuments && !decision.shouldRetrieveMemories;
@@ -55,6 +56,7 @@ export const retrievalGate = async (state: AgentState) => {
     queryEmbedding: queryEmbedding ?? undefined,
     userQuery: queryForProcessing,
     trace,
+    matchedWorkflowTool,
     ...(skipRetrieval && { retrievedContext: { documents: [], memories: [] } }),
   };
 };

@@ -6,8 +6,9 @@ import {
   retrieveMemoriesAndChunks,
   injectContext,
   clarificationResponse,
+  executeWorkflow,
 } from './nodes';
-import { retrievalGateConditionalRouter } from './routers';
+import { retrievalGateConditionalRouter, postRetrievalRouter } from './routers';
 
 export function buildWorkflow(checkpointer: RedisCheckpointer) {
   const workflow = new StateGraph(AgentStateSchema)
@@ -15,11 +16,13 @@ export function buildWorkflow(checkpointer: RedisCheckpointer) {
     .addNode('retrieveMemoriesAndChunks', retrieveMemoriesAndChunks)
     .addNode('injectContext', injectContext)
     .addNode('clarificationResponse', clarificationResponse)
+    .addNode('executeWorkflow', executeWorkflow)
     .addEdge(START, 'retrievalGate')
     .addConditionalEdges('retrievalGate', retrievalGateConditionalRouter)
-    .addEdge('retrieveMemoriesAndChunks', 'injectContext')
+    .addConditionalEdges('retrieveMemoriesAndChunks', postRetrievalRouter)
     .addEdge('injectContext', END) // Knowledge extraction runs in background
-    .addEdge('clarificationResponse', END);
+    .addEdge('clarificationResponse', END)
+    .addEdge('executeWorkflow', END);
 
   return workflow.compile({ checkpointer });
 }

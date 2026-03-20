@@ -5,9 +5,20 @@ export const retrievalGateConditionalRouter = (state: AgentState) => {
   if (state.gateDecision?.needsClarification) {
     return 'clarificationResponse';
   }
-  if (state.gateDecision?.shouldRetrieveDocuments || state.gateDecision?.shouldRetrieveMemories) {
+  // Workflow queries (needsWorkflow) also go through retrieval first
+  // so executeWorkflow has document context available
+  if (
+    state.gateDecision?.shouldRetrieveDocuments ||
+    state.gateDecision?.shouldRetrieveMemories ||
+    state.gateDecision?.needsWorkflow
+  ) {
     return 'retrieveMemoriesAndChunks';
   }
+  return 'injectContext';
+};
+
+export const postRetrievalRouter = (state: AgentState) => {
+  if (state.gateDecision?.needsWorkflow) return 'executeWorkflow';
   return 'injectContext';
 };
 

@@ -29,6 +29,8 @@ import {
 } from './util/GcsUtil';
 import { initializeQueues, shutdownQueues, getFileProcessingQueue, getJobStatus } from './queue';
 import type { AgentTrace } from './schemas/types';
+import { setCircuitBreakerRedis } from './util/RetryUtil';
+import { WorkflowRunStore } from './stores/WorkflowRunStore';
 
 // Supported file types
 const SUPPORTED_EXTENSIONS = ['.pdf', '.docx', '.doc', '.md', '.txt'];
@@ -164,6 +166,7 @@ async function getUserSession(userId: string): Promise<string> {
 async function initialize() {
   console.log('Connecting to Redis...');
   await RedisSessionStore.connect();
+  setCircuitBreakerRedis(RedisSessionStore.getClient());
 
   console.log('Initializing job queues...');
   await initializeQueues();
@@ -189,6 +192,7 @@ async function getFormattedAnswerToUserinput(userQuery: string, sessionId: strin
       messages: [userMessage],
       userQuery: userQuery,
       userId,
+      sessionId,
     },
     { configurable: { thread_id: sessionId } }
   );
@@ -250,6 +254,10 @@ app.post('/api/chat', requireAuth(), async (req, res) => {
       response: result?.response ?? '[No response generated]',
       sessionId,
     };
+
+    if (result?.workflowData !== undefined) {
+      response.workflowData = result.workflowData;
+    }
 
     // Optionally include trace data (for debugging/monitoring)
     if (includeTrace && trace) {
@@ -730,6 +738,7 @@ async function main() {
 // Handle graceful shutdown
 async function gracefulShutdown(signal: string) {
   console.log(`\n${signal} received. Shutting down...`);
+  await WorkflowRunStore.releaseAllActiveLocks();
   await shutdownQueues();
   await RedisSessionStore.disconnect();
   await db.destroy();
