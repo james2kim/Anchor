@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from '@clerk/clerk-react';
 import { sendMessage, uploadFileSmart, pollJobStatus, getSession, parseSessionMessage, type RateLimitInfo } from '../api/client';
 
@@ -21,11 +21,16 @@ export function useChat() {
   ]);
   const [isLoading, setIsLoading] = useState(false);
   const [rateLimit, setRateLimit] = useState<RateLimitInfo | null>(null);
+  const [progressLabel, setProgressLabel] = useState<string | null>(null);
+  const sessionIdRef = useRef<string | null>(null);
 
   // Load session messages on mount
   useEffect(() => {
     async function loadSession() {
       const session = await getSession(getToken);
+      if (session?.sessionId) {
+        sessionIdRef.current = session.sessionId;
+      }
       if (session?.messages && session.messages.length > 0) {
         const parsed: Message[] = [];
         for (const msg of session.messages) {
@@ -56,26 +61,6 @@ export function useChat() {
     return message;
   }, []);
 
-  const handleSend = useCallback(
-    async (content: string) => {
-      addMessage('user', content);
-      setIsLoading(true);
-
-      try {
-        const response = await sendMessage(content, getToken);
-        if (response.rateLimit) setRateLimit(response.rateLimit);
-        addMessage('assistant', response.response);
-      } catch (err) {
-        const rateLimitInfo = (err as Error & { rateLimit?: RateLimitInfo }).rateLimit;
-        if (rateLimitInfo) setRateLimit(rateLimitInfo);
-        addMessage('system', err instanceof Error ? err.message : 'Failed to send message. Please try again.');
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    [addMessage, getToken]
-  );
-
   const updateMessage = useCallback(
     (id: string, content: string, loading?: boolean) => {
       setMessages((prev) =>
@@ -83,6 +68,51 @@ export function useChat() {
       );
     },
     []
+  );
+
+  const handleSend = useCallback(
+    async (content: string) => {
+      addMessage('user', content);
+      setIsLoading(true);
+      setProgressLabel(null);
+
+      // Open SSE progress connection if we have a sessionId
+      let eventSource: EventSource | null = null;
+      if (sessionIdRef.current) {
+        const token = await getToken();
+        const url = `/api/chat/progress/${sessionIdRef.current}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+        eventSource = new EventSource(url);
+        eventSource.onmessage = (e) => {
+          try {
+            const event = JSON.parse(e.data);
+            if (event.status === 'done') {
+              eventSource?.close();
+            } else {
+              setProgressLabel(event.label);
+            }
+          } catch { /* ignore */ }
+        };
+        eventSource.onerror = () => {
+          eventSource?.close();
+        };
+      }
+
+      try {
+        const response = await sendMessage(content, getToken);
+        if (response.rateLimit) setRateLimit(response.rateLimit);
+        if (response.sessionId) sessionIdRef.current = response.sessionId;
+        addMessage('assistant', response.response);
+      } catch (err) {
+        const rateLimitInfo = (err as Error & { rateLimit?: RateLimitInfo }).rateLimit;
+        if (rateLimitInfo) setRateLimit(rateLimitInfo);
+        addMessage('system', err instanceof Error ? err.message : 'Failed to send message. Please try again.');
+      } finally {
+        eventSource?.close();
+        setIsLoading(false);
+        setProgressLabel(null);
+      }
+    },
+    [addMessage, getToken]
   );
 
   const handleUpload = useCallback(
@@ -137,6 +167,7 @@ export function useChat() {
   return {
     messages,
     isLoading,
+    progressLabel,
     rateLimit,
     handleSend,
     handleUpload,

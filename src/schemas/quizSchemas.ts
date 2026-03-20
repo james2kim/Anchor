@@ -24,6 +24,7 @@ export const quizQuestionSchema = z.object({
 
 export const quizOutputSchema = z.object({
   title: z.string().min(5).max(200),
+  topicSummary: z.string().min(10).max(500).describe('A brief 2-3 sentence overview of the topic to introduce the quiz'),
   questions: z.array(quizQuestionSchema).min(1).max(20),
 });
 

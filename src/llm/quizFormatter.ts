@@ -11,6 +11,10 @@ export const formatQuizAsMarkdown = (quiz: QuizOutput): string => {
 
   sections.push(`## ${quiz.title}\n`);
 
+  if (quiz.topicSummary) {
+    sections.push(quiz.topicSummary);
+  }
+
   // --- Questions ---
   for (let i = 0; i < quiz.questions.length; i++) {
     const q = quiz.questions[i];

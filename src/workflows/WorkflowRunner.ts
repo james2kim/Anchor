@@ -4,6 +4,7 @@ import { WorkflowStepError } from './errors';
 import { TraceUtil } from '../util/TraceUtil';
 import type { AgentTrace } from '../schemas/types';
 import { wlog } from '../util/WorkflowLogger';
+import { ProgressEmitter } from '../util/ProgressEmitter';
 
 /**
  * Shape of a step artifact that carries LLM usage info.
@@ -35,6 +36,8 @@ interface RunStepOptions<T> {
   durable?: boolean;
   /** Step-level timeout in ms. Wraps the entire step (including retries). */
   timeoutMs?: number;
+  /** User-facing label for progress display (e.g. "Generating questions...") */
+  progressLabel?: string;
 }
 
 export class WorkflowRunner {
@@ -42,10 +45,12 @@ export class WorkflowRunner {
   private trace: AgentTrace;
   private totalInputTokens = 0;
   private totalOutputTokens = 0;
+  private sessionId: string | null = null;
 
-  constructor(trace: AgentTrace, run: WorkflowRun) {
+  constructor(trace: AgentTrace, run: WorkflowRun, sessionId?: string) {
     this.run = run;
     this.trace = trace;
+    this.sessionId = sessionId ?? null;
   }
 
   /**
@@ -57,11 +62,27 @@ export class WorkflowRunner {
     fn: () => Promise<T>,
     opts?: RunStepOptions<T>
   ): Promise<T> {
+    const label = opts?.progressLabel ?? stepName;
+
+    // Emit progress: step starting
+    if (this.sessionId) {
+      ProgressEmitter.emit(this.sessionId, { step: stepName, status: 'running', label });
+    }
+
     const span = TraceUtil.startSpan(spanName);
     const result = await this.run.executeStep<T>(stepName, fn, {
       durable: opts?.durable,
       timeoutMs: opts?.timeoutMs,
     });
+
+    // Emit progress: step done
+    if (this.sessionId) {
+      ProgressEmitter.emit(this.sessionId, {
+        step: stepName,
+        status: result.cached ? 'cached' : 'completed',
+        label,
+      });
+    }
 
     // Auto-accumulate tokens and build metadata in a single pass
     const artifact = result.artifact as unknown;

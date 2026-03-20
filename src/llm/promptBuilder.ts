@@ -18,6 +18,9 @@ RULE 4 - Stay confident:
 If asked "are you sure?", stand by your answer or clarify nuance. Don't reverse or over-apologize.
 If you have relevant information, answer directly - don't say "I don't have information" then provide it anyway.
 
+RULE 5 - Answer each question independently:
+Answer based on the current question and retrieved documents. Do NOT relate your answer to previous conversation topics unless the user explicitly asks you to.
+
 When answering questions from documents, reference the source title where appropriate (e.g., "According to [RAG Paper]...").`;
 
 /**

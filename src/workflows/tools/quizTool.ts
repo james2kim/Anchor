@@ -104,7 +104,7 @@ export const quizTool: WorkflowTool = {
   ],
 
   async execute(ctx: WorkflowContext, run: WorkflowRun): Promise<WorkflowResult> {
-    const runner = new WorkflowRunner(ctx.trace, run);
+    const runner = new WorkflowRunner(ctx.trace, run, ctx.sessionId);
     const { userQuery, contextBlock, conversationContext } = ctx;
 
     return runner.execute(async () => {
@@ -129,6 +129,7 @@ export const quizTool: WorkflowTool = {
         },
         {
           timeoutMs: 45_000,
+          progressLabel: 'Understanding your request...',
           spanMeta: (a) => ({
             success: true,
             topic: a.data.topic,
@@ -174,6 +175,7 @@ export const quizTool: WorkflowTool = {
           },
           {
             durable: false,
+            progressLabel: 'Finding relevant study materials...',
             spanMeta: (a) => ({
               contextWasThin: true,
               chunksAdded: a.chunksAdded,
@@ -212,6 +214,7 @@ export const quizTool: WorkflowTool = {
         },
         {
           timeoutMs: 120_000,
+          progressLabel: 'Generating questions...',
           spanMeta: (a) => ({
             success: true,
             questionsGenerated: a.data.questions.length,
@@ -245,6 +248,7 @@ export const quizTool: WorkflowTool = {
         },
         {
           durable: false,
+          progressLabel: 'Checking quiz quality...',
           spanMeta: (a) => ({
             valid: true,
             errorCount: 0,

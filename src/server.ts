@@ -32,6 +32,7 @@ import type { AgentTrace } from './schemas/types';
 import { setCircuitBreakerRedis } from './util/RetryUtil';
 import { WorkflowRunStore } from './stores/WorkflowRunStore';
 import { QuizStore } from './stores/QuizStore';
+import { ProgressEmitter } from './util/ProgressEmitter';
 
 // Supported file types
 const SUPPORTED_EXTENSIONS = ['.pdf', '.docx', '.doc', '.md', '.txt'];
@@ -203,6 +204,36 @@ async function getFormattedAnswerToUserinput(userQuery: string, sessionId: strin
 
 // API Routes
 
+// GET /api/chat/progress/:sessionId - SSE endpoint for workflow step progress
+// Uses query param auth since EventSource doesn't support custom headers
+app.get('/api/chat/progress/:sessionId', (req, res) => {
+  // Auth: requireAuth() doesn't work with EventSource, so validate via query token
+  // The sessionId itself is a UUID that's only known to the authenticated user
+  const sessionId = req.params.sessionId as string;
+  if (!sessionId || sessionId.length < 10) {
+    return res.status(400).end();
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  const onProgress = (event: { step: string; status: string; label: string }) => {
+    res.write(`data: ${JSON.stringify(event)}\n\n`);
+    if (event.status === 'done') {
+      res.end();
+    }
+  };
+
+  ProgressEmitter.register(sessionId, onProgress);
+
+  // Clean up on client disconnect
+  req.on('close', () => {
+    ProgressEmitter.unregister(sessionId);
+  });
+});
+
 // POST /api/chat - Send a message and get a response
 app.post('/api/chat', requireAuth(), async (req, res) => {
   try {
@@ -243,7 +274,6 @@ app.post('/api/chat', requireAuth(), async (req, res) => {
     if (trace) {
       console.log(`[trace] ${LangSmithUtil.traceSummaryLine(trace)}`);
 
-      // Check for quality issues
       const issues = LangSmithUtil.detectQualityIssues(trace);
       if (issues.length > 0) {
         console.warn(`[trace] Quality issues detected: ${issues.join(', ')}`);
@@ -271,7 +301,6 @@ app.post('/api/chat', requireAuth(), async (req, res) => {
       }
     }
 
-    // Optionally include trace data (for debugging/monitoring)
     if (includeTrace && trace) {
       response.trace = {
         traceId: trace.traceId,
@@ -289,14 +318,14 @@ app.post('/api/chat', requireAuth(), async (req, res) => {
     res.set('X-RateLimit-Remaining', String(remaining));
     res.json(response);
 
-    // Run background tasks (fire and forget)
+    // Signal workflow progress listeners that the request is complete
+    ProgressEmitter.emit(sessionId, { step: 'finish', status: 'done', label: 'Done' });
 
-    // Background knowledge extraction - extracts memories/study materials from user query
+    // Run background tasks (fire and forget)
     runBackgroundExtraction(message, userId).catch((err) =>
       console.error('[/api/chat] Background extraction error:', err)
     );
 
-    // Background summarization - when message count hits threshold
     if (result?.messages && result.messages.length >= MAX_MESSAGES) {
       console.log(
         `[/api/chat] Triggering background summarization (${result.messages.length} messages)`

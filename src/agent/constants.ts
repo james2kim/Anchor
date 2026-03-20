@@ -10,13 +10,8 @@ export const MESSAGES_TO_SUMMARIZE = 10; // Oldest N messages to summarize
 export const MESSAGES_TO_KEEP = 5; // Newest N messages to retain (MAX_MESSAGES - MESSAGES_TO_SUMMARIZE)
 
 export const haikuModel = new ChatAnthropic({
-  model: 'claude-3-haiku-20240307',
+  model: 'claude-haiku-4-5-20251001',
   apiKey: process.env.ANTHROPIC_API_KEY,
-  clientOptions: {
-    defaultHeaders: {
-      'anthropic-beta': 'prompt-caching-2024-07-31',
-    },
-  },
 });
 
 export const sonnetModel = new ChatAnthropic({

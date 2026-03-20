@@ -12,7 +12,7 @@ import { useChat } from './hooks/useChat';
 type Tab = 'chat' | 'documents' | 'quizzes';
 
 function App() {
-  const { messages, isLoading, rateLimit, handleSend, handleUpload } = useChat();
+  const { messages, isLoading, progressLabel, rateLimit, handleSend, handleUpload } = useChat();
   const isRateLimited = rateLimit !== null && rateLimit.remaining <= 0;
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [activeTab, setActiveTab] = useState<Tab>('chat');
@@ -100,7 +100,7 @@ function App() {
               {messages.map((msg) => (
                 <ChatMessage key={msg.id} content={msg.content} role={msg.role} loading={msg.loading} />
               ))}
-              {isLoading && <ThinkingIndicator />}
+              {isLoading && <ThinkingIndicator label={progressLabel} />}
               <div ref={messagesEndRef} />
             </div>
 

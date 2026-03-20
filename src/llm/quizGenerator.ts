@@ -122,6 +122,7 @@ ${input.focusAreas?.length ? `- Focus areas: ${input.focusAreas.join(', ')}` : '
    - medium: understanding and application
    - hard: analysis and evaluation
 7. The title should describe the quiz topic concisely.
+8. The topicSummary should be a brief 2-3 sentence overview of the topic, grounded in the study materials. This introduces the quiz to the user.
 
 ## Study Materials
 ${contextBlock}`;

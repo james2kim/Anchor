@@ -42,22 +42,33 @@ const truncateMessage = (content: string): { text: string; truncated: boolean } 
   };
 };
 
+// Detect quiz/workflow output by structure (title + numbered questions with lettered options)
+const QUIZ_PATTERN = /^##\s+.+\n[\s\S]*\*\*\d+\.\s/;
+
 /**
  * Applies truncation to assistant messages only.
- * Human and system messages are kept intact for predictability.
+ * Quiz/workflow outputs are replaced with a brief summary to prevent
+ * topic contamination on follow-up questions.
  */
 const truncateMessages = (messages: BaseMessage[]): { messages: BaseMessage[]; truncatedCount: number } => {
   let truncatedCount = 0;
 
   const truncated = messages.map((msg) => {
-    // Only truncate assistant (AI) messages
     if (msg.constructor.name !== 'AIMessage') {
       return msg;
     }
 
     const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-    const { text, truncated: wasTruncated } = truncateMessage(content);
 
+    // Quiz/workflow outputs: replace with a minimal summary
+    if (QUIZ_PATTERN.test(content)) {
+      const titleMatch = content.match(/^##\s+(.+)/);
+      const title = titleMatch ? titleMatch[1].trim() : 'a quiz';
+      truncatedCount++;
+      return new AIMessage({ content: `[Previously generated ${title}]`, additional_kwargs: msg.additional_kwargs });
+    }
+
+    const { text, truncated: wasTruncated } = truncateMessage(content);
     if (wasTruncated) truncatedCount++;
 
     return new AIMessage({ content: text, additional_kwargs: msg.additional_kwargs });
