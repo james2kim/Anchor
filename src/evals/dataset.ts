@@ -23,7 +23,8 @@ export type Category =
   | 'off_topic'
   | 'unclear'
   | 'general_knowledge'
-  | 'conversational';
+  | 'conversational'
+  | 'workflow';
 
 export interface SmokeTestCase {
   userQuery: string;
@@ -37,6 +38,11 @@ export interface SmokeTestCase {
   must_cover?: string[];
   expected_amount_usd?: number;
   dataset_split?: string[];
+  // Workflow-specific fields
+  expected_workflow_tool?: string;
+  quiz_topic_keywords?: string[];
+  // Multi-turn: prior messages to send before the test query (same session)
+  conversation_setup?: string[];
 }
 
 export const SMOKE_TEST_DATASET: SmokeTestCase[] = [
@@ -173,6 +179,75 @@ export const SMOKE_TEST_DATASET: SmokeTestCase[] = [
     answer_should_contain: ['Sunrise'],
     // Ensure it's affirmative, not "I don't see Sunrise Labs in your records"
     answer_must_not_contain: ["don't have", "don't see", 'no record', 'unable to find', "couldn't find"],
+    dataset_split: ['base'],
+  },
+
+  // === WORKFLOW: SINGLE-TURN (Should generate quiz) ===
+  {
+    userQuery: 'Make me a 3 question quiz about why context in the middle is bad',
+    category: 'workflow',
+    expected_behavior: 'ANSWER',
+    expected_workflow_tool: 'quiz_generation',
+    quiz_topic_keywords: ['middle', 'context', 'position', 'primacy', 'recency', 'attention'],
+    dataset_split: ['base'],
+  },
+  {
+    userQuery: 'Quiz me on the ReAct framework with 3 questions',
+    category: 'workflow',
+    expected_behavior: 'ANSWER',
+    expected_workflow_tool: 'quiz_generation',
+    quiz_topic_keywords: ['react', 'reasoning', 'acting', 'tool', 'observation', 'agent'],
+    dataset_split: ['base'],
+  },
+  {
+    userQuery: 'Create a true/false practice test about React with 3 questions',
+    category: 'workflow',
+    expected_behavior: 'ANSWER',
+    expected_workflow_tool: 'quiz_generation',
+    quiz_topic_keywords: ['react', 'component', 'virtual dom', 'javascript', 'ui', 'jsx'],
+    dataset_split: ['base'],
+  },
+
+  // === WORKFLOW: MULTI-TURN (Context inference) ===
+  {
+    userQuery: 'make me a quiz on it',
+    category: 'workflow',
+    expected_behavior: 'ANSWER',
+    expected_workflow_tool: 'quiz_generation',
+    conversation_setup: [
+      'Why is context in the middle bad for language models?',
+    ],
+    quiz_topic_keywords: ['middle', 'context', 'position', 'primacy', 'recency', 'performance'],
+    dataset_split: ['base'],
+  },
+  {
+    userQuery: 'quiz me on that',
+    category: 'workflow',
+    expected_behavior: 'ANSWER',
+    expected_workflow_tool: 'quiz_generation',
+    conversation_setup: [
+      'make me a quiz on React',
+      'What is the ReAct framework and how does it work?',
+    ],
+    // Should be about ReAct (most recent topic), NOT React library
+    quiz_topic_keywords: ['react', 'reasoning', 'acting', 'tool', 'observation', 'agent'],
+    answer_must_not_contain: ['virtual dom', 'jsx', 'component-based'],
+    dataset_split: ['base'],
+  },
+
+  // === MULTI-TURN: CONTEXT-AWARE CLARIFICATION (should ANSWER, not CLARIFY) ===
+  {
+    userQuery: 'I need more information',
+    category: 'study_content',
+    expected_behavior: 'ANSWER',
+    conversation_setup: [
+      'What is the ReAct framework?',
+      'How does it combine reasoning and acting?',
+    ],
+    // With prior context about ReAct, "I need more information" should be resolved
+    // to "I need more information about ReAct" and answered, NOT routed to clarify.
+    answer_must_contain_any: ['react', 'reasoning', 'acting', 'tool', 'observation', 'agent'],
+    answer_must_not_contain: ['could you clarify', 'could you be more specific', 'what topic'],
     dataset_split: ['base'],
   },
 ];

@@ -105,7 +105,7 @@ export const quizTool: WorkflowTool = {
 
   async execute(ctx: WorkflowContext, run: WorkflowRun): Promise<WorkflowResult> {
     const runner = new WorkflowRunner(ctx.trace, run);
-    const { userQuery, contextBlock } = ctx;
+    const { userQuery, contextBlock, conversationContext } = ctx;
 
     return runner.execute(async () => {
       // ---- Step 1: Extract quiz intent ----
@@ -114,7 +114,7 @@ export const quizTool: WorkflowTool = {
         'quizIntentExtraction',
         async () => {
           const start = Date.now();
-          const res = await extractQuizIntent(userQuery, contextBlock);
+          const res = await extractQuizIntent(userQuery, contextBlock, conversationContext);
           const durationMs = Date.now() - start;
 
           if (!res) {

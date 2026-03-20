@@ -8,7 +8,9 @@ A conversational AI study assistant with persistent memory, document RAG, and in
 - **Document RAG** - Upload and query documents with hybrid search (semantic + keyword + temporal)
 - **Session Continuity** - Redis-backed sessions with automatic summary archival to long-term memory
 - **Smart Retrieval** - Hybrid Rule-Based and LLM-powered retrieval gate that decides when to search documents vs. memories vs. neither
-- **React Web UI** - Mobile-responsive chat interface with document upload and markdown rendering
+- **Workflow Tool Calling** - Extensible tool system with durable execution, keyword-based routing, and automatic resumption on failure
+- **Quiz Generation** - Multi-step workflow tool that extracts intent, enriches context, generates quizzes, validates output, and persists results
+- **React Web UI** - Mobile-responsive chat interface with document upload, quiz taking, and markdown rendering
 - **User Authentication** - Clerk-based auth with automatic user provisioning and per-user data isolation
 - **Large File Upload** - Files over 25 MB bypass Firebase limits via signed URL upload to GCS with BullMQ-based job queue processing
 - **Job Queue** - BullMQ worker queue for file processing with automatic retries, progress tracking, stall detection, and graceful shutdown
@@ -17,51 +19,56 @@ A conversational AI study assistant with persistent memory, document RAG, and in
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         User Query                                   │
-└─────────────────────────────────────────────────────────────────────┘
-                                │
-                                ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                      LangGraph Workflow                              │
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │                     retrievalGate                             │   │
-│  │  • LLM assesses query type (personal/study/general/off-topic) │   │
-│  │  • Generates query embedding in parallel                      │   │
-│  │  • Policy decides: retrieve docs? memories? clarify?          │   │
-│  └──────────────────────────┬───────────────────────────────────┘   │
-│              ┌──────────────┴──────────────┐                        │
-│              ▼                             ▼                        │
-│  ┌──────────────────────┐    ┌─────────────────────────────────┐   │
-│  │ clarificationResponse│    │  retrieveMemoriesAndChunks      │   │
-│  │  (if ambiguous)      │    │  • Hybrid search (embedding+BM25)│   │
-│  └──────────────────────┘    │  • Temporal filtering            │   │
-│                              │  • RRF fusion                    │   │
-│                              └─────────────┬───────────────────┘   │
-│                                            ▼                        │
-│                              ┌─────────────────────────────────┐   │
-│                              │        injectContext             │   │
-│                              │  • U-shape distribution          │   │
-│                              │  • Build context + generate reply│   │
-│                              └─────────────┬───────────────────┘   │
-│                                            ▼                        │
-│                              ┌─────────────────────────────────┐   │
-│                              │   extractAndStoreKnowledge       │   │
-│                              │  • Extract facts/goals/prefs     │   │
-│                              │  • Dedupe via cosine similarity  │   │
-│                              │  • Summarize messages (background)│   │
-│                              └─────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                            User Query                                    │
+└─────────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         LangGraph Workflow                               │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │                       retrievalGate                                │  │
+│  │  • Rewrite query (resolve pronouns via LLM extract + regex sub)   │  │
+│  │  • Classify: rule-based (60-70%) or LLM fallback (Haiku)         │  │
+│  │  • Pre-resolve workflow tool via keyword matching                  │  │
+│  │  • Policy decides: retrieve? clarify? workflow?                   │  │
+│  └───────────────────────────┬───────────────────────────────────────┘  │
+│            ┌─────────────────┼─────────────────┐                        │
+│            ▼                 ▼                  ▼                        │
+│  ┌──────────────────┐  ┌──────────────┐  ┌───────────────────────────┐ │
+│  │clarificationResp.│  │ injectContext │  │ retrieveMemoriesAndChunks │ │
+│  │ (off-topic/      │  │ (no retrieval │  │  • Two-tier memory search  │ │
+│  │  unclear)        │  │  needed)      │  │  • Hybrid doc search (RRF) │ │
+│  └──────────────────┘  └──────────────┘  └─────────────┬─────────────┘ │
+│                                           ┌────────────┴────────────┐   │
+│                                           ▼                         ▼   │
+│                              ┌─────────────────────┐  ┌──────────────┐ │
+│                              │   executeWorkflow    │  │ injectContext │ │
+│                              │  • Route to tool     │  │ • U-shape ctx │ │
+│                              │  • Durable execution │  │ • Model route │ │
+│                              │  • Session locking   │  │ • Generate    │ │
+│                              └──────────┬──────────┘  └──────┬───────┘ │
+│                                         │                     │         │
+│                                         ▼                     ▼         │
+│                              ┌─────────────────────────────────────┐    │
+│                              │     extractAndStoreKnowledge        │    │
+│                              │  • Extract facts/goals/prefs        │    │
+│                              │  • Dedupe via cosine similarity     │    │
+│                              │  • Summarize messages (background)  │    │
+│                              └─────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────────────┘
          │                                        │
          ▼                                        ▼
-┌─────────────────────┐              ┌─────────────────────────┐
-│    PostgreSQL       │              │         Redis           │
-│   (Long-term)       │              │      (Short-term)       │
-│                     │              │                         │
-│  • memories (pgvector)             │  • Session state        │
-│  • documents         │              │  • Messages + summary   │
-│  • chunks (hybrid idx)│             │  • LangGraph checkpoints│
-└─────────────────────┘              └─────────────────────────┘
+┌─────────────────────┐              ┌─────────────────────────────┐
+│    PostgreSQL       │              │           Redis             │
+│   (Long-term)       │              │        (Short-term)         │
+│                     │              │                             │
+│  • memories (pgvec) │              │  • Session state            │
+│  • documents        │              │  • Messages + summary       │
+│  • chunks (hybrid)  │              │  • LangGraph checkpoints    │
+│  • quizzes          │              │  • Workflow run state (1wk)  │
+└─────────────────────┘              │  • Session locks             │
+                                     └─────────────────────────────┘
 ```
 
 ## Memory Architecture
@@ -75,6 +82,9 @@ Session-scoped memory with 24-hour TTL:
 | `session:<id>`                  | Session state (messages, summary, taskState) |
 | `checkpoint:<thread_id>:latest` | LangGraph checkpoint for workflow resumption |
 | `user:<id>:active_session`      | Maps user to their active session            |
+| `wfrun:<runId>`                 | Durable workflow run record (1-week TTL)     |
+| `wfrun:<sessionId>:active`      | Currently active workflow run for session    |
+| `wflock:<sessionId>`            | Session-scoped workflow mutex (120s TTL)     |
 
 **Stale Session Archival**: When a session is inactive for 12+ hours but accessed again, the session summary is persisted to long-term memory before continuing. This ensures important context survives session expiration.
 
@@ -109,11 +119,32 @@ Permanent storage for extracted knowledge and documents:
 | `end_year` | Temporal range end (null = "Present") |
 | `document_id` | Parent document |
 
+**quizzes table:**
+| Field | Description |
+|-------|-------------|
+| `title` | Quiz title (from generation) |
+| `quiz_data` | JSON: full quiz with questions, options, answers, explanations |
+| `input_data` | JSON: extracted intent (topic, difficulty, types) |
+| `question_count` | Number of questions |
+| `user_id` | Owner |
+
 ## Workflow Nodes
 
 ### 1. retrievalGate
 
-Routes queries based on rule-based classification + LLM fallback + deterministic policy.
+Routes queries based on query rewriting + rule-based classification + LLM fallback + deterministic policy.
+
+**Query Rewriting** (pronoun/reference resolution):
+Resolves "it", "this", "that" and implicit references before classification:
+
+1. LLM (Haiku) extracts the most recent topic from conversation context
+2. Programmatic regex substitution replaces references with the extracted topic
+3. No full-query LLM rewriting — avoids hallucination in the rewrite step
+
+```
+"quiz me on it" + context about mitosis → "quiz me on mitosis"
+"explain"       + context about React   → "explain React"
+```
 
 **Rule-Based Classification** (instant, free):
 Handles 60-70% of queries without LLM calls:
@@ -123,10 +154,11 @@ Handles 60-70% of queries without LLM calls:
 - Personal questions ("my goal", "what did I say") → `personal`
 - Topic questions ("explain X", "what is Y") → `study_content`
 - Lifestyle advice ("should I nap?") → `off_topic`
+- Tool keywords (quiz, test, practice) → `workflow` (pre-resolves tool)
 
 **LLM Assessment** (Haiku - for ambiguous cases):
 
-- `queryType`: personal | study_content | general_knowledge | conversational | off_topic | unclear
+- `queryType`: personal | study_content | general_knowledge | conversational | off_topic | unclear | workflow
 - `referencesPersonalContext`: boolean
 
 **Policy** (deterministic):
@@ -134,6 +166,7 @@ Handles 60-70% of queries without LLM calls:
 - `conversational` or `off_topic` → skip all retrieval
 - `study_content` → search documents + memories (for personalization)
 - `personal` → search documents + memories with full budget
+- `workflow` → retrieve documents + memories, route to `executeWorkflow`
 - `unclear` → request clarification
 
 ### 2. retrieveMemoriesAndChunks
@@ -222,7 +255,30 @@ After:  [summary] + [m11, m12, m13, m14, m15]
 
 The summary is appended to the session's running summary, preserving context across pruning cycles.
 
-### 5. clarificationResponse
+### 5. executeWorkflow
+
+Routes to and executes registered workflow tools (e.g., quiz generation).
+
+**Tool Routing:**
+The retrieval gate may pre-resolve the tool via keyword matching during classification. If not pre-resolved, `executeWorkflow` runs keyword scoring against all registered tools. This two-pass approach ensures tool routing is robust even when query rewriting changes the original phrasing.
+
+```typescript
+// Pre-resolved by gate (preferred — query-invariant)
+const preResolved = state.matchedWorkflowTool ? getToolByName(state.matchedWorkflowTool) : null;
+// Fallback: score keywords against rewritten query
+const routeResult = preResolved ? { tool: preResolved } : routeToTool(userQuery);
+```
+
+**Session Locking:**
+Prevents concurrent workflow execution within a session. A Redis-backed mutex (`SET NX EX 120s`) ensures only one workflow runs per session at a time. If a lock is held, the request is rejected with "A workflow is already running."
+
+**In-Workflow Retrieval:**
+Workflow tools receive a `ctx.retrieve(query)` function that allows them to fetch additional document chunks mid-execution. This is used when the initial retrieval context is thin (< 500 characters) — the tool can enrich its context without restarting the pipeline.
+
+**Durable Execution:**
+See [Durable Workflow Execution](#13-durable-workflow-execution) below.
+
+### 6. clarificationResponse
 
 Handles ambiguous queries by asking for clarification.
 
@@ -329,7 +385,123 @@ Three layers protect against transient external API failures:
 - Contextual memories (goals, decisions) are skipped since they require similarity search
 - The `embeddingFallback` flag is captured in trace metadata for observability
 
-### 11. Authentication with Clerk
+### 11. Keyword-Based Tool Routing
+
+Workflow tools are routed via deterministic keyword matching, not LLM-based function calling. Each tool registers an array of regex patterns:
+
+```typescript
+keywords: [
+  /\b(quiz|test|assess)\s+me\b/i,
+  /\bpractice\s+(test|questions|problems)\b/i,
+  /\b(make|create|generate)\b.*\b(quiz|test|questions)\b/i,
+]
+```
+
+Routing scores all tools by counting keyword matches and picks the highest. This is auditable (you can see exactly why a tool was selected), fast (no LLM call), and avoids hallucinated tool names. The tradeoff is manual keyword curation, but the tool surface is small enough that this is practical.
+
+**Pre-Resolution:** The retrieval gate runs keyword matching during classification and stores the matched tool name in agent state. This means the tool is resolved against the *original* query before any rewriting, preventing cases where pronoun resolution strips away tool-triggering keywords.
+
+### 12. Workflow Tool Abstraction
+
+The workflow system uses a minimal interface that separates concerns:
+
+```typescript
+interface WorkflowTool {
+  name: string;
+  description: string;
+  keywords: RegExp[];
+  execute: (ctx: WorkflowContext, run: WorkflowRun) => Promise<WorkflowResult>;
+}
+
+interface WorkflowContext {
+  userQuery: string;
+  contextBlock: string | null;
+  documents: RerankedChunk[];
+  memories: Memory[];
+  retrieve: (query: string) => Promise<DocumentChunk[]>;  // In-workflow retrieval
+  // ...
+}
+```
+
+Tools don't manage their own retrieval, routing, or persistence — they receive pre-fetched context and a durable run handle. This lets new tools be added by defining keywords + an `execute` function and registering in the tool registry. The `WorkflowRunner` handles token accumulation, error mapping, and observability for all tools uniformly.
+
+### 13. Durable Workflow Execution
+
+Workflows survive interruptions (server restarts, timeouts, client disconnects) via Redis-persisted step state:
+
+```typescript
+interface WorkflowRunRecord {
+  runId: string;
+  sessionId: string;
+  toolName: string;
+  status: 'running' | 'completed' | 'failed';
+  steps: Record<string, StepRecord>;  // Each step cached independently
+}
+
+interface StepRecord {
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  artifact: unknown | null;  // Cached result — skipped on resume
+}
+```
+
+**Resumption logic:**
+1. Step already completed → return cached artifact (skip re-execution)
+2. Step marked running but stale (> 5 minutes) → re-execute (crash recovery)
+3. Step marked running and fresh → reject (dual-execution prevention)
+4. Step pending → execute normally
+
+**Get-or-create with atomic Lua:** The `WorkflowRunStore` uses a Lua script to atomically check for an active run, supersede stale runs from different tools, or create a new run. This prevents race conditions between concurrent requests.
+
+**Artifact validation:** Cached artifacts are optionally validated against Zod schemas on resume, catching cases where the schema evolved between the original execution and the resume.
+
+Run records are stored with a 1-week TTL in Redis (`wfrun:{runId}`), with an active-run pointer (`wfrun:{sessionId}:active`) for fast lookup.
+
+### 14. Workflow Error Mapping
+
+Workflow tools use a catch-and-map pattern that separates internal errors from user-facing messages:
+
+```typescript
+const QUIZ_ERROR_MAP: ErrorMapping[] = [
+  {
+    code: 'INTENT_EXTRACTION_FAILED',
+    message: "I couldn't understand what kind of quiz you'd like...",
+    errorType: 'intent_extraction_failed',
+    onError: (err) => validateObservation(err, failureSchema)  // Observability hook
+  },
+  {
+    code: 'GENERATION_FAILED',
+    message: "I had trouble generating the quiz...",
+    errorType: 'generation_failed',
+    onError: (err) => validateObservation(err, failureSchema)
+  },
+  {
+    code: 'VALIDATION_FAILED',
+    message: "The generated quiz didn't pass validation...",
+    errorType: 'validation_failed',
+    onError: (err) => validateObservation(err, failureSchema)
+  },
+]
+```
+
+Each step throws `WorkflowStepError` with a machine-readable code. The `WorkflowRunner.execute()` catches these and maps them to user-facing messages via the error table. Optional `onError` hooks validate failure observations against Zod schemas for eval integration.
+
+### 15. Token Accounting
+
+The `WorkflowRunner` auto-accumulates token usage across all steps:
+
+```typescript
+async runStep<T>(stepName, spanName, fn, opts?) {
+  const result = await fn();
+  // Auto-extract from step artifacts
+  this.totalInputTokens += result.usage?.inputTokens ?? 0;
+  this.totalOutputTokens += result.usage?.outputTokens ?? 0;
+  return result;
+}
+```
+
+`runner.success()` and `runner.failure()` attach the accumulated totals to the result, giving the trace layer a single place to read workflow-level token costs without each tool manually tracking usage.
+
+### 16. Authentication with Clerk
 
 Authentication is handled by Clerk, a managed auth service. This was chosen over building custom auth because:
 
@@ -344,6 +516,103 @@ Authentication is handled by Clerk, a managed auth service. This was chosen over
 3. Backend verifies token via `requireAuth()` middleware from `@clerk/express`
 4. `getOrCreateUser()` finds or creates a user record in PostgreSQL linked to the Clerk ID
 5. All data (memories, documents, sessions) is scoped to the authenticated user
+
+## Quiz Generation Workflow
+
+The quiz tool is the first workflow tool and demonstrates all the patterns of the tool calling system. It runs a 5-step durable pipeline:
+
+```
+User: "Quiz me on cellular respiration"
+                │
+                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Step 1: Intent Extraction (Haiku)                              │
+│  Extract: topic, questionCount, difficulty, questionTypes,      │
+│           focusAreas from user query + conversation context     │
+│  Timeout: 45s                                                    │
+└───────────────────────────────┬─────────────────────────────────┘
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Step 2: Context Enrichment (conditional, non-durable)          │
+│  If context < 500 chars → ctx.retrieve(topic) for more chunks  │
+│  New chunks scored at 0.3 confidence (below reranked docs)     │
+└───────────────────────────────┬─────────────────────────────────┘
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Step 3: Quiz Generation (Sonnet)                               │
+│  Generate quiz with structured output (Zod schema)             │
+│  Normalize true/false answers (handles LLM variations)         │
+│  Timeout: 120s │ Durable: cached in Redis                      │
+└───────────────────────────────┬─────────────────────────────────┘
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Step 4: Validation (deterministic, no LLM)                     │
+│  • correctAnswer must appear in options                         │
+│  • No duplicate options or questions                            │
+│  • true_false: exactly 2 options ["True", "False"]             │
+│  • multiple_choice: ≥ 3 options                                 │
+└───────────────────────────────┬─────────────────────────────────┘
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Step 5: Format + Persist                                       │
+│  • Render as markdown (questions + collapsible answer key)      │
+│  • Return response + raw quiz data for DB persistence          │
+│  • Auto-saved to PostgreSQL via /api/chat handler              │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Model Selection
+
+| Step | Model | Rationale |
+|------|-------|-----------|
+| Intent extraction | Haiku | Fast structured output — extraction, not reasoning |
+| Quiz generation | Sonnet | Complex reasoning for quality questions + consistency |
+
+Both use `.withStructuredOutput(zodSchema, { includeRaw: true })` to get usage metadata alongside parsed output.
+
+### Schemas
+
+```typescript
+// Input (extracted from user query)
+quizInputSchema: {
+  topic: string (2-200 chars),
+  questionCount: int (1-20),
+  questionTypes: ['multiple_choice' | 'true_false'],
+  difficulty: 'easy' | 'medium' | 'hard',
+  focusAreas?: string[] (max 5),
+}
+
+// Output (generated quiz)
+quizOutputSchema: {
+  title: string (5-200 chars),
+  questions: [{
+    type: 'multiple_choice' | 'true_false',
+    question: string (10-500 chars),
+    options: string[] (2-6 items),
+    correctAnswer: string,
+    explanation: string (10-500 chars),
+  }] (1-20 items),
+}
+```
+
+### True/False Normalization
+
+LLMs produce inconsistent true/false answers ("true", "T", "correct", "Yes"). The `normalizeTrueFalse` function standardizes all variations to exactly `"True"` / `"False"` in both options and correctAnswer fields before validation runs. This is applied in-place after generation.
+
+### Quiz Persistence
+
+Quizzes are auto-saved when the `/api/chat` handler detects `workflowData` with a `title` and `questions` array in the response. The quiz ID is returned to the frontend for navigation.
+
+```
+/api/chat response → workflowData detected → QuizStore.save() → quizId in response
+```
+
+### Frontend Quiz Experience
+
+The frontend provides an interactive quiz-taking UI:
+
+- **QuizList**: Lists saved quizzes with title, question count, creation date, and delete with confirmation
+- **QuizView**: Interactive quiz with option selection, submit scoring, correct/incorrect visual feedback, explanations, and retake
 
 ## File Upload Pipeline
 
@@ -537,9 +806,16 @@ At high read volume, the database becomes the bottleneck:
 ```
 ├── frontend/                    # React frontend (Vite)
 │   ├── src/
-│   │   ├── components/          # React components
-│   │   ├── hooks/               # Custom hooks (useChat)
-│   │   ├── api/                 # API client
+│   │   ├── components/
+│   │   │   ├── DocumentList.tsx # Document management
+│   │   │   ├── QuizList.tsx     # Quiz listing + delete
+│   │   │   ├── QuizView.tsx     # Interactive quiz taking
+│   │   │   └── ConfirmModal.tsx # Reusable confirmation dialog
+│   │   ├── hooks/
+│   │   │   ├── useChat.ts       # Chat state management
+│   │   │   └── useQuizzes.ts    # Quiz CRUD operations
+│   │   ├── api/
+│   │   │   └── client.ts        # API client (chat, docs, quizzes)
 │   │   ├── utils/               # Markdown formatting
 │   │   └── App.tsx              # Main app component
 │   ├── package.json
@@ -558,29 +834,45 @@ At high read volume, the database becomes the bottleneck:
     │   └── nodes/
     │       ├── retrievalGate.ts
     │       ├── retrieveMemoriesAndChunks.ts
+    │       ├── executeWorkflow.ts   # Workflow tool execution
     │       ├── injectContext.ts
     │       ├── extractKnowledge.ts
     │       ├── clarificationResponse.ts
     │       └── summarize.ts
     │
+    ├── workflows/
+    │   ├── types.ts             # WorkflowTool, WorkflowContext interfaces
+    │   ├── registry.ts          # Tool registration + keyword routing
+    │   ├── WorkflowRunner.ts    # Step runner, token accounting, error mapping
+    │   ├── WorkflowRun.ts       # Durable execution state machine
+    │   ├── durableTypes.ts      # WorkflowRunRecord, StepRecord types
+    │   └── tools/
+    │       └── quizTool.ts      # Quiz generation workflow (5-step pipeline)
+    │
     ├── stores/
     │   ├── DocumentStore.ts     # Hybrid search, chunk management
     │   ├── MemoryStore.ts       # Long-term memory operations
     │   ├── RedisSessionStore.ts # Session state management
-    │   └── UserStore.ts         # User CRUD operations
+    │   ├── UserStore.ts         # User CRUD operations
+    │   ├── QuizStore.ts         # Quiz persistence (CRUD)
+    │   └── WorkflowRunStore.ts  # Durable run state (Redis + Lua)
     │
     ├── memory/
     │   └── RedisCheckpointer.ts # LangGraph checkpoint persistence
     │
     ├── llm/
-    │   ├── retrievalAssessor.ts # Query classification
+    │   ├── retrievalAssessor.ts # Query classification (7 types)
+    │   ├── queryRewriter.ts     # Pronoun resolution (LLM extract + regex sub)
+    │   ├── quizGenerator.ts     # Intent extraction + quiz generation
+    │   ├── quizValidator.ts     # Deterministic quiz validation
+    │   ├── quizFormatter.ts     # Markdown formatting + answer key
     │   ├── promptBuilder.ts     # Context block + system prompt
     │   ├── summarizeMessages.ts # Conversation summarization
     │   └── extractMemories.ts   # Knowledge extraction
     │
     ├── ingest/
     │   ├── ingestDocument.ts    # Document chunking + embedding
-    │   └── processGcsFile.ts   # GCS download → text extraction → ingestion
+    │   └── processGcsFile.ts    # GCS download → text extraction → ingestion
     │
     ├── queue/
     │   ├── index.ts             # Queue lifecycle (init/shutdown) + exports
@@ -590,6 +882,19 @@ At high read volume, the database becomes the bottleneck:
     │   ├── workers.ts           # BullMQ worker (concurrency 2, progress reporting)
     │   └── statusHelper.ts      # BullMQ state → API response mapping
     │
+    ├── schemas/
+    │   ├── types.ts             # Zod schemas and TypeScript types
+    │   └── quizSchemas.ts       # Quiz input/output Zod schemas
+    │
+    ├── evals/
+    │   ├── dataset.ts           # Test cases with expected behaviors
+    │   ├── evaluators.ts        # Scoring (behavior, routing, content)
+    │   ├── runLocal.ts          # Local test runner
+    │   ├── runExperiment.ts     # LangSmith experiment runner
+    │   ├── seed.ts              # Fixture seeder
+    │   └── fixtures/
+    │       └── evalDocuments.ts  # Fake test documents
+    │
     ├── services/
     │   └── EmbeddingService.ts  # VoyageAI embeddings
     │
@@ -597,11 +902,9 @@ At high read volume, the database becomes the bottleneck:
     │   ├── DocumentUtil.ts      # Text chunking
     │   ├── TemporalUtil.ts      # Date range extraction
     │   ├── EmbeddingUtil.ts     # Vector formatting
+    │   ├── TraceUtil.ts         # Trace pruning + candidate summaries
     │   ├── GcsUtil.ts           # GCS signed URLs, download, delete
     │   └── RetryUtil.ts         # Retry with exponential backoff
-    │
-    ├── schemas/
-    │   └── types.ts             # Zod schemas and TypeScript types
     │
     └── db/
         ├── knex.ts              # Database connection
@@ -710,11 +1013,15 @@ Authorization: Bearer <clerk_jwt_token>
 
 ### POST /api/chat
 
-Send a message and get a response.
+Send a message and get a response. If the response triggers a workflow tool (e.g., quiz generation), `workflowData` and `quizId` are included.
 
 ```json
 Request:  { "message": "What's in my biology notes?" }
 Response: { "response": "Based on your notes...", "sessionId": "..." }
+
+// Workflow response (quiz):
+Request:  { "message": "Quiz me on cellular respiration" }
+Response: { "response": "## Biology Quiz\n...", "sessionId": "...", "quizId": "uuid" }
 ```
 
 ### POST /api/upload
@@ -753,6 +1060,30 @@ Response: { "status": "completed", "result": { "documentId": "...", "chunkCount"
       or: { "status": "processing", "progress": { "stage": "embedding", "detail": "..." } }
       or: { "status": "queued" }
       or: { "status": "failed", "error": "Could not extract text..." }
+```
+
+### GET /api/quizzes
+
+List all quizzes for the authenticated user.
+
+```json
+Response: { "quizzes": [{ "id": "...", "title": "...", "question_count": 5, "created_at": "..." }] }
+```
+
+### GET /api/quizzes/:id
+
+Get a single quiz with full question data.
+
+```json
+Response: { "quiz": { "id": "...", "title": "...", "quiz_data": { "title": "...", "questions": [...] }, "input_data": {...}, "created_at": "..." } }
+```
+
+### DELETE /api/quizzes/:id
+
+Delete a quiz. Returns success status.
+
+```json
+Response: { "success": true }
 ```
 
 ### GET /api/session
@@ -1253,6 +1584,7 @@ npx tsx src/evals/runExperiment.ts
 | `study_content`        | ANSWER            | Questions about documents/notes               |
 | `personal`             | ANSWER            | User-specific info (goals, history)           |
 | `temporal_containment` | ANSWER            | Time-bound queries ("What did I do in 2023?") |
+| `workflow`             | ANSWER            | Tool-triggering queries ("quiz me on X")      |
 | `off_topic`            | REFUSE            | Lifestyle/opinion questions (stocks, fashion) |
 | `unclear`              | CLARIFY           | Vague/ambiguous queries                       |
 

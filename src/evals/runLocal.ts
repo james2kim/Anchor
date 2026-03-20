@@ -59,14 +59,11 @@ interface AgentRunResult {
   durationMs: number;
 }
 
-async function runAgent(
+async function invokeAgent(
   query: string,
-  agentApp: any,
-  RedisSessionStore: any
-): Promise<AgentRunResult> {
-  const sessionId = `local-eval-${crypto.randomUUID()}`;
-  const startTime = Date.now();
-
+  sessionId: string,
+  agentApp: any
+): Promise<any> {
   const userMessage = {
     id: crypto.randomUUID(),
     role: 'user',
@@ -74,15 +71,36 @@ async function runAgent(
     createdAt: new Date().toISOString(),
   };
 
+  return agentApp.invoke(
+    {
+      messages: [userMessage],
+      userQuery: query,
+      userId: EVAL_USER_ID,
+      sessionId,
+    },
+    { configurable: { thread_id: sessionId } }
+  );
+}
+
+async function runAgent(
+  testCase: SmokeTestCase,
+  agentApp: any,
+  RedisSessionStore: any
+): Promise<AgentRunResult> {
+  const sessionId = `local-eval-${crypto.randomUUID()}`;
+
   try {
-    const result = await agentApp.invoke(
-      {
-        messages: [userMessage],
-        userQuery: query,
-        userId: EVAL_USER_ID,
-      },
-      { configurable: { thread_id: sessionId } }
-    );
+    // Run conversation setup messages first (multi-turn)
+    if (testCase.conversation_setup?.length) {
+      for (const setupQuery of testCase.conversation_setup) {
+        await invokeAgent(setupQuery, sessionId, agentApp);
+      }
+    }
+
+    // Run the actual test query
+    const startTime = Date.now();
+    const result = await invokeAgent(testCase.userQuery, sessionId, agentApp);
+    const durationMs = Date.now() - startTime;
 
     // Clean up session
     try {
@@ -97,15 +115,16 @@ async function runAgent(
         response: result?.response || '',
         trace: result?.trace,
         gateDecision: result?.gateDecision,
+        workflowData: result?.workflowData,
       },
-      durationMs: Date.now() - startTime,
+      durationMs,
     };
   } catch (error) {
     return {
       output: {
         response: `ERROR: ${error}`,
       },
-      durationMs: Date.now() - startTime,
+      durationMs: 0,
     };
   }
 }
@@ -124,7 +143,7 @@ async function runTests(
       `\r[${i + 1}/${testCases.length}] Testing: ${tc.userQuery.slice(0, 40)}...`
     );
 
-    const { output, durationMs } = await runAgent(tc.userQuery, agentApp, RedisSessionStore);
+    const { output, durationMs } = await runAgent(tc, agentApp, RedisSessionStore);
     const evalResults = runEvaluators(output, tc, durationMs);
     const overall = calculateOverallScore(evalResults);
 

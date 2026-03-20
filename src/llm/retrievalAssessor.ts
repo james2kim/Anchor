@@ -60,6 +60,33 @@ const ruleBasedClassify = (query: string): RuleBasedResult | null => {
     }};
   }
 
+  // Off-topic - lifestyle/personal advice patterns (must run BEFORE personal rules
+  // because "should I ... ?" matches both off-topic and personal question patterns)
+  if (/\b(should i|would you recommend|can i get.*(advice|recommendation)).*(wear|eat|buy|invest|date|sleep|nap|stock)\b/i.test(lower)) {
+    return { assessment: {
+      queryType: 'off_topic',
+      referencesPersonalContext: false,
+      reasoning: 'rule: lifestyle advice',
+    }};
+  }
+  if (/\b(should i|do you think i should)\s+take\b/i.test(lower) && !/\b(notes?|test|exam|class|course)\b/i.test(lower)) {
+    return { assessment: {
+      queryType: 'off_topic',
+      referencesPersonalContext: false,
+      reasoning: 'rule: personal medical/supplement advice',
+    }};
+  }
+
+  // Unclear - vague requests that need clarification (must run BEFORE personal statements
+  // because "I need more information" matches "I need..." personal pattern)
+  if (/^i\s+need\s+(more\s+)?(information|info|details|help|context)\s*\.?$/i.test(q)) {
+    return { assessment: {
+      queryType: 'unclear',
+      referencesPersonalContext: false,
+      reasoning: 'rule: vague request needing clarification',
+    }};
+  }
+
   // Personal statements - "I am/like/prefer/want/study/work/have..."
   if (/^i\s+(am|like|prefer|want|need|study|work|have|live|go|usually|always|never)\b/i.test(q)) {
     return { assessment: {
@@ -135,15 +162,6 @@ const ruleBasedClassify = (query: string): RuleBasedResult | null => {
     }};
   }
 
-  // Off-topic - lifestyle advice patterns
-  if (/\b(should i|would you recommend).*(wear|eat|buy|invest|date|sleep|nap)\b/i.test(lower)) {
-    return { assessment: {
-      queryType: 'off_topic',
-      referencesPersonalContext: false,
-      reasoning: 'rule: lifestyle advice',
-    }};
-  }
-
   // No rule matched - let LLM decide
   return null;
 };
@@ -216,15 +234,15 @@ export const retrievalGatePolicy = (assessment: RetrievalGateAssessment): Retrie
     };
   }
 
-  // Off-topic: no retrieval, redirect (not clarification)
+  // Off-topic: no retrieval, route to clarificationResponse which handles refusal
   if (queryType === 'off_topic') {
     return {
       shouldRetrieveDocuments: false,
       shouldRetrieveMemories: false,
       memoryBudget: 'minimal',
-      needsClarification: false,
+      needsClarification: true,
       needsWorkflow: false,
-      reasoning: 'off_topic - redirect',
+      reasoning: 'off_topic - redirect to clarification/refusal',
     };
   }
 

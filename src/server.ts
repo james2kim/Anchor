@@ -31,6 +31,7 @@ import { initializeQueues, shutdownQueues, getFileProcessingQueue, getJobStatus 
 import type { AgentTrace } from './schemas/types';
 import { setCircuitBreakerRedis } from './util/RetryUtil';
 import { WorkflowRunStore } from './stores/WorkflowRunStore';
+import { QuizStore } from './stores/QuizStore';
 
 // Supported file types
 const SUPPORTED_EXTENSIONS = ['.pdf', '.docx', '.doc', '.md', '.txt'];
@@ -257,6 +258,17 @@ app.post('/api/chat', requireAuth(), async (req, res) => {
 
     if (result?.workflowData !== undefined) {
       response.workflowData = result.workflowData;
+
+      // Persist quiz to database
+      const wd = result.workflowData as { title?: string; questions?: unknown[] };
+      if (wd?.title && wd?.questions) {
+        try {
+          const quizId = await QuizStore.save(userId, wd.title, result.workflowData, {});
+          response.quizId = quizId;
+        } catch (err) {
+          console.error('[/api/chat] Failed to save quiz:', err);
+        }
+      }
     }
 
     // Optionally include trace data (for debugging/monitoring)
@@ -712,6 +724,67 @@ app.delete('/api/documents/:id', requireAuth(), async (req, res) => {
   } catch (err) {
     console.error('Error in DELETE /api/documents/:id:', err);
     res.status(500).json({ error: 'Failed to delete document' });
+  }
+});
+
+// GET /api/quizzes - List user's quizzes
+app.get('/api/quizzes', requireAuth(), async (req, res) => {
+  try {
+    const { userId: clerkUserId } = getAuth(req);
+    if (!clerkUserId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const userId = await getOrCreateUser(clerkUserId);
+    const quizzes = await QuizStore.list(userId);
+    res.json({ quizzes });
+  } catch (err) {
+    console.error('Error in GET /api/quizzes:', err);
+    res.status(500).json({ error: 'Failed to list quizzes' });
+  }
+});
+
+// GET /api/quizzes/:id - Get a single quiz
+app.get('/api/quizzes/:id', requireAuth(), async (req, res) => {
+  try {
+    const { userId: clerkUserId } = getAuth(req);
+    if (!clerkUserId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const userId = await getOrCreateUser(clerkUserId);
+    const quiz = await QuizStore.get(req.params.id as string, userId);
+
+    if (!quiz) {
+      return res.status(404).json({ error: 'Quiz not found' });
+    }
+
+    res.json({ quiz });
+  } catch (err) {
+    console.error('Error in GET /api/quizzes/:id:', err);
+    res.status(500).json({ error: 'Failed to get quiz' });
+  }
+});
+
+// DELETE /api/quizzes/:id - Delete a quiz
+app.delete('/api/quizzes/:id', requireAuth(), async (req, res) => {
+  try {
+    const { userId: clerkUserId } = getAuth(req);
+    if (!clerkUserId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const userId = await getOrCreateUser(clerkUserId);
+    const deleted = await QuizStore.delete(req.params.id as string, userId);
+
+    if (!deleted) {
+      return res.status(404).json({ error: 'Quiz not found' });
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error in DELETE /api/quizzes/:id:', err);
+    res.status(500).json({ error: 'Failed to delete quiz' });
   }
 });
 

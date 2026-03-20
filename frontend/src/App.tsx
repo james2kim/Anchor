@@ -5,9 +5,11 @@ import { ChatInput } from './components/ChatInput';
 import { FileUpload } from './components/FileUpload';
 import { ThinkingIndicator } from './components/ThinkingIndicator';
 import { DocumentList } from './components/DocumentList';
+import { QuizList } from './components/QuizList';
+import { QuizView } from './components/QuizView';
 import { useChat } from './hooks/useChat';
 
-type Tab = 'chat' | 'documents';
+type Tab = 'chat' | 'documents' | 'quizzes';
 
 function App() {
   const { messages, isLoading, rateLimit, handleSend, handleUpload } = useChat();
@@ -15,6 +17,9 @@ function App() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [activeTab, setActiveTab] = useState<Tab>('chat');
   const [documentsKey, setDocumentsKey] = useState(0);
+  const [quizzesKey, setQuizzesKey] = useState(0);
+  const [selectedQuizId, setSelectedQuizId] = useState<string | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -23,8 +28,13 @@ function App() {
 
   const switchTab = (tab: Tab) => {
     setActiveTab(tab);
+    setMenuOpen(false);
     if (tab === 'documents') {
       setDocumentsKey((k) => k + 1);
+    }
+    if (tab === 'quizzes') {
+      setQuizzesKey((k) => k + 1);
+      setSelectedQuizId(null);
     }
   };
 
@@ -36,7 +46,7 @@ function App() {
           <h1>Anchor</h1>
         </div>
         <SignedIn>
-          <div className="header-tabs">
+          <div className={`header-tabs${menuOpen ? ' open' : ''}`}>
             <button
               className={`tab-button${activeTab === 'chat' ? ' active' : ''}`}
               onClick={() => switchTab('chat')}
@@ -49,10 +59,23 @@ function App() {
             >
               Documents
             </button>
+            <button
+              className={`tab-button${activeTab === 'quizzes' ? ' active' : ''}`}
+              onClick={() => switchTab('quizzes')}
+            >
+              Quizzes
+            </button>
           </div>
         </SignedIn>
         <div className="header-actions">
           <SignedIn>
+            <button
+              className="hamburger"
+              onClick={() => setMenuOpen((o) => !o)}
+              aria-label="Toggle menu"
+            >
+              <span /><span /><span />
+            </button>
             <UserButton />
           </SignedIn>
         </div>
@@ -71,7 +94,7 @@ function App() {
       </SignedOut>
 
       <SignedIn>
-        {activeTab === 'chat' ? (
+        {activeTab === 'chat' && (
           <div className="container">
             <div className="messages">
               {messages.map((msg) => (
@@ -89,9 +112,26 @@ function App() {
             <ChatInput onSend={handleSend} disabled={isLoading || isRateLimited} />
             <FileUpload onUpload={handleUpload} disabled={isLoading} />
           </div>
-        ) : (
+        )}
+        {activeTab === 'documents' && (
           <div className="container">
             <DocumentList key={documentsKey} />
+          </div>
+        )}
+        {activeTab === 'quizzes' && (
+          <div className="container">
+            {selectedQuizId ? (
+              <QuizView
+                key={selectedQuizId}
+                quizId={selectedQuizId}
+                onBack={() => setSelectedQuizId(null)}
+              />
+            ) : (
+              <QuizList
+                key={quizzesKey}
+                onSelectQuiz={(id) => setSelectedQuizId(id)}
+              />
+            )}
           </div>
         )}
       </SignedIn>

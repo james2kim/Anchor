@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { useDocuments } from '../hooks/useDocuments';
+import { ConfirmModal } from './ConfirmModal';
 
 export function DocumentList() {
   const { documents, loading, error, handleDelete } = useDocuments();
-  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
 
   if (loading) {
     return (
@@ -33,38 +34,28 @@ export function DocumentList() {
 
   return (
     <div className="documents-list">
+      {deleteTarget && (
+        <ConfirmModal
+          title="Delete Document"
+          message={`Are you sure you want to delete "${deleteTarget.name}"? This will also remove all associated chunks and cannot be undone.`}
+          onConfirm={() => {
+            handleDelete(deleteTarget.id);
+            setDeleteTarget(null);
+          }}
+          onCancel={() => setDeleteTarget(null)}
+        />
+      )}
       {documents.map((doc) => (
         <div key={doc.id} className="document-card">
           <div className="document-card-header">
             <h3>{doc.title || doc.source}</h3>
-            {confirmId === doc.id ? (
-              <div className="document-confirm-delete">
-                <span>Delete?</span>
-                <button
-                  className="document-delete-yes"
-                  onClick={() => {
-                    handleDelete(doc.id);
-                    setConfirmId(null);
-                  }}
-                >
-                  Yes
-                </button>
-                <button
-                  className="document-delete-no"
-                  onClick={() => setConfirmId(null)}
-                >
-                  No
-                </button>
-              </div>
-            ) : (
-              <button
-                className="document-delete-btn"
-                onClick={() => setConfirmId(doc.id)}
-                title="Delete document"
-              >
-                Delete
-              </button>
-            )}
+            <button
+              className="document-delete-btn"
+              onClick={() => setDeleteTarget({ id: doc.id, name: doc.title || doc.source })}
+              title="Delete document"
+            >
+              Delete
+            </button>
           </div>
           <p className="document-summary">
             {doc.summary || 'No summary available'}

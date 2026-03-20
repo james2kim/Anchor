@@ -49,6 +49,20 @@ const executeWorkflowInner = async (state: AgentState) => {
     const memories = state.retrievedContext?.memories ?? [];
     const contextBlock = buildContextBlock(documents, memories);
 
+    // Build conversation context from recent messages so workflows can
+    // resolve references ("it", "this topic") even if the query rewrite failed.
+    const CONTEXT_MSG_COUNT = 6;
+    const recentMsgs = state.messages.slice(-CONTEXT_MSG_COUNT - 1, -1);
+    const conversationContext = recentMsgs.length > 0
+      ? recentMsgs
+          .map((m) => {
+            const role = m.constructor.name === 'HumanMessage' ? 'User' : 'Assistant';
+            const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+            return `${role}: ${content.length > 400 ? content.slice(0, 400) + '...' : content}`;
+          })
+          .join('\n')
+      : null;
+
     // ---- Route to the correct workflow tool ----
     const routingSpan = TraceUtil.startSpan('workflowRouting');
     const preResolved = state.matchedWorkflowTool
@@ -124,6 +138,7 @@ const executeWorkflowInner = async (state: AgentState) => {
         memories,
         trace,
         sessionId: state.sessionId,
+        conversationContext,
         retrieve,
       },
       run

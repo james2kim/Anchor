@@ -8,6 +8,7 @@ export interface WorkflowContext {
   memories: Memory[];
   trace: AgentTrace;
   sessionId: string;
+  conversationContext: string | null;
   retrieve: (query: string) => Promise<DocumentChunk[]>;
 }
 

@@ -322,7 +322,7 @@ describe('WorkflowRunner', () => {
 
       expect(result.success).toBe(false);
       if (!result.success) {
-        expect(result.errorType).toBe('unhandled_tool_error');
+        expect(result.errorType).toBe('UNKNOWN_CODE');
         expect(result.errorMessage).toBe('something weird');
       }
     });

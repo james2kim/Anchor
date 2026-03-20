@@ -40,12 +40,17 @@ const intentModel = haikuModel.withStructuredOutput(quizInputSchema, { includeRa
 
 export const extractQuizIntent = async (
   userQuery: string,
-  documentContext?: string | null
+  documentContext?: string | null,
+  conversationContext?: string | null
 ): Promise<LLMResult<QuizInput> | null> => {
   try {
-    const userContent = documentContext
-      ? `User request: ${userQuery}\n\nAvailable study material topics:\n${documentContext}`
-      : `User request: ${userQuery}`;
+    let userContent = `User request: ${userQuery}`;
+    if (conversationContext) {
+      userContent += `\n\nRecent conversation (use this to resolve references like "it", "this topic", etc.):\n${conversationContext}`;
+    }
+    if (documentContext) {
+      userContent += `\n\nAvailable study material topics:\n${documentContext}`;
+    }
 
     const result = await withRetry(
       (signal) =>

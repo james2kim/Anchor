@@ -6,7 +6,38 @@ export interface RateLimitInfo {
 export interface ChatResponse {
   response: string;
   sessionId?: string;
+  quizId?: string;
+  workflowData?: unknown;
   rateLimit?: RateLimitInfo;
+}
+
+export interface QuizQuestion {
+  type: 'multiple_choice' | 'true_false';
+  question: string;
+  options: string[];
+  correctAnswer: string;
+  explanation: string;
+}
+
+export interface QuizData {
+  title: string;
+  questions: QuizQuestion[];
+}
+
+export interface QuizListItem {
+  id: string;
+  title: string;
+  question_count: number;
+  created_at: string;
+}
+
+export interface QuizRecord {
+  id: string;
+  user_id: string;
+  title: string;
+  quiz_data: QuizData;
+  input_data: unknown;
+  created_at: string;
 }
 
 export interface UploadResponse {
@@ -354,6 +385,53 @@ export async function uploadFileSmart(
   await uploadToGcs(file, signedUrl, onProgress);
   const jobId = await enqueueFileProcessing({ fileId, gcsPath, filename: file.name }, getToken);
   return { kind: 'enqueued', jobId, filename: file.name };
+}
+
+export async function listQuizzes(
+  getToken: () => Promise<string | null>
+): Promise<QuizListItem[]> {
+  const authHeaders = await getAuthHeaders(getToken);
+  const response = await fetch('/api/quizzes', { headers: authHeaders });
+
+  if (!response.ok) {
+    const data = await safeFetchJson(response);
+    throw new Error((data as Record<string, string>).error || 'Failed to list quizzes');
+  }
+
+  const data = await safeFetchJson<{ quizzes: QuizListItem[] }>(response);
+  return data.quizzes;
+}
+
+export async function getQuiz(
+  quizId: string,
+  getToken: () => Promise<string | null>
+): Promise<QuizRecord> {
+  const authHeaders = await getAuthHeaders(getToken);
+  const response = await fetch(`/api/quizzes/${quizId}`, { headers: authHeaders });
+
+  if (!response.ok) {
+    const data = await safeFetchJson(response);
+    throw new Error((data as Record<string, string>).error || 'Failed to get quiz');
+  }
+
+  const data = await safeFetchJson<{ quiz: QuizRecord }>(response);
+  return data.quiz;
+}
+
+export async function deleteQuiz(
+  quizId: string,
+  getToken: () => Promise<string | null>
+): Promise<void> {
+  const authHeaders = await getAuthHeaders(getToken);
+  const response = await fetch(`/api/quizzes/${quizId}`, {
+    method: 'DELETE',
+    headers: authHeaders,
+  });
+
+  if (!response.ok) {
+    const data = await safeFetchJson(response);
+    throw new Error((data as Record<string, string>).error || 'Failed to delete quiz');
+  }
 }
 
 export async function getSession(

@@ -86,10 +86,7 @@ export const TraceUtil = {
    * Sets the final outcome on the trace.
    * Returns the updated trace (immutable).
    */
-  setOutcome(
-    trace: AgentTrace,
-    outcome: Omit<TraceOutcome, 'durationMs'>
-  ): AgentTrace {
+  setOutcome(trace: AgentTrace, outcome: Omit<TraceOutcome, 'durationMs'>): AgentTrace {
     return {
       ...trace,
       outcome: {
@@ -193,7 +190,7 @@ export const TraceUtil = {
     };
 
     // Check size and prune metadata if needed
-    let size = this.estimateTraceSize(pruned);
+    const size = this.estimateTraceSize(pruned);
     if (size > TRACE_LIMITS.MAX_BYTES_PER_RUN) {
       pruned = this.pruneTraceMetadata(pruned);
     }

@@ -30,6 +30,7 @@ export interface AgentOutput {
     needsClarification: boolean;
     reasoning: string;
   };
+  workflowData?: unknown;
 }
 
 // -----------------------------
@@ -95,6 +96,16 @@ const detectBehaviorFromText = (response: string): ExpectedBehavior => {
     "don't have a strong opinion",
     'happy to help you with any study',
     'happy to help with any study',
+    "not qualified to give",
+    "not qualified to provide",
+    "not the right source for",
+    "can't provide financial",
+    "can't provide investment",
+    "can't provide medical",
+    "i don't have documents about",
+    "beyond my scope",
+    "beyond the scope",
+    "not equipped to",
   ];
 
   const clarifyPatterns = [
@@ -113,6 +124,15 @@ const detectBehaviorFromText = (response: string): ExpectedBehavior => {
     'what kind of help',
     'more information about what',
     'which one do you mean',
+    'i need to know what',
+    'what topic',
+    'what subject',
+    'could you tell me more about what',
+    'can you tell me what',
+    'what exactly',
+    'please specify',
+    'happy to help! however',
+    'happy to provide more information! however',
   ];
 
   const isClarify = clarifyPatterns.some((p) => lower.includes(p));
@@ -147,6 +167,12 @@ const inferBehaviorFromTrace = (output: AgentOutput): ExpectedBehavior | null =>
   // unclear/needsClarification should CLARIFY
   if (gateDecision?.needsClarification) return 'CLARIFY';
   if (gateSpan?.meta?.needsClarification) return 'CLARIFY';
+
+  // workflow queries that completed successfully should be ANSWER
+  if (queryType === 'workflow') {
+    const executeSpan = findSpan(trace, 'executeWorkflow');
+    if (executeSpan?.meta?.success === true) return 'ANSWER';
+  }
 
   return null;
 };
@@ -210,6 +236,7 @@ export const evaluateRouting = (
     unclear: ['unclear', 'conversational'],
     general_knowledge: ['general_knowledge'],
     conversational: ['conversational'],
+    workflow: ['workflow'],
   };
 
   const exact = categoryToQueryType[expectedCategory]?.[0] ?? expectedCategory;
@@ -499,6 +526,134 @@ export const evaluateAmount = (response: string, expectedAmount: number): Evalua
 };
 
 // -----------------------------
+// Workflow evaluators
+// -----------------------------
+
+/**
+ * Workflow routing: checks that the query was routed to executeWorkflow
+ * and the correct tool was selected.
+ */
+export const evaluateWorkflowRouting = (
+  output: AgentOutput,
+  expectedTool: string
+): EvaluationResult => {
+  const trace = output.trace;
+  const executeSpan = findSpan(trace, 'executeWorkflow');
+
+  if (!executeSpan) {
+    return {
+      key: 'workflow_routing',
+      score: 0,
+      weight: 3.0,
+      critical: true,
+      comment: 'Query was not routed to executeWorkflow',
+    };
+  }
+
+  const selectedTool = executeSpan.meta?.selectedTool as string | undefined;
+  if (selectedTool !== expectedTool) {
+    return {
+      key: 'workflow_routing',
+      score: 0,
+      weight: 3.0,
+      critical: true,
+      comment: `Expected tool "${expectedTool}", got "${selectedTool ?? 'none'}"`,
+    };
+  }
+
+  return {
+    key: 'workflow_routing',
+    score: 1,
+    weight: 3.0,
+    critical: true,
+    comment: `Correctly routed to ${expectedTool}`,
+  };
+};
+
+/**
+ * Quiz structural validity: checks correctAnswer in options,
+ * no duplicates, explanations present.
+ */
+export const evaluateQuizStructure = (output: AgentOutput): EvaluationResult => {
+  const workflowData = output.workflowData as any;
+  if (!workflowData) {
+    return {
+      key: 'quiz_structure',
+      score: 0.5,
+      weight: 2.0,
+      critical: false,
+      comment: 'No workflowData returned (quiz may have been in response text only)',
+    };
+  }
+
+  const questions = workflowData.questions;
+  if (!Array.isArray(questions) || questions.length === 0) {
+    return {
+      key: 'quiz_structure',
+      score: 0,
+      weight: 2.0,
+      critical: false,
+      comment: 'No questions in workflowData',
+    };
+  }
+
+  const errors: string[] = [];
+
+  for (let i = 0; i < questions.length; i++) {
+    const q = questions[i];
+    if (!q.options?.includes(q.correctAnswer)) {
+      errors.push(`Q${i + 1}: correctAnswer not in options`);
+    }
+    const uniqueOpts = new Set(q.options?.map((o: string) => o.toLowerCase().trim()));
+    if (uniqueOpts.size !== q.options?.length) {
+      errors.push(`Q${i + 1}: duplicate options`);
+    }
+    if (!q.explanation || q.explanation.length < 10) {
+      errors.push(`Q${i + 1}: missing or short explanation`);
+    }
+  }
+
+  // Check for duplicate questions
+  const questionTexts = questions.map((q: any) => q.question?.toLowerCase().trim());
+  if (new Set(questionTexts).size !== questionTexts.length) {
+    errors.push('Duplicate questions detected');
+  }
+
+  const score = errors.length === 0 ? 1.0 : Math.max(0, 1 - errors.length * 0.25);
+
+  return {
+    key: 'quiz_structure',
+    score,
+    weight: 2.0,
+    critical: false,
+    comment: errors.length === 0 ? `All ${questions.length} questions structurally valid` : errors.join('; '),
+  };
+};
+
+/**
+ * Quiz topic relevance: checks that quiz content matches expected topic keywords.
+ */
+export const evaluateQuizTopicRelevance = (
+  output: AgentOutput,
+  topicKeywords: string[]
+): EvaluationResult => {
+  const lower = safeLower(output.response);
+  const matched = topicKeywords.filter((kw) => lower.includes(kw.toLowerCase()));
+  const score = matched.length / Math.max(1, Math.min(topicKeywords.length, 3)); // need at least 3 hits or all if < 3
+
+  return {
+    key: 'quiz_topic_relevance',
+    score: Math.min(score, 1),
+    weight: 2.5,
+    critical: false,
+    comment:
+      matched.length > 0
+        ? `Topic match: ${matched.join(', ')} (${matched.length}/${topicKeywords.length})`
+        : `No topic keywords found. Expected any of: ${topicKeywords.join(', ')}`,
+  };
+};
+
+// -----------------------------
 // Runner updates (minimal)
 // -----------------------------
 
@@ -514,6 +669,17 @@ export const runEvaluators = (
   results.push(evaluateRouting(output, testCase.category));
   results.push(evaluateRetrieval(output, testCase));
   results.push(evaluateBudget(output, durationMs));
+
+  // Workflow evaluators
+  if (testCase.category === 'workflow') {
+    if (testCase.expected_workflow_tool) {
+      results.push(evaluateWorkflowRouting(output, testCase.expected_workflow_tool));
+    }
+    results.push(evaluateQuizStructure(output));
+    if (testCase.quiz_topic_keywords?.length) {
+      results.push(evaluateQuizTopicRelevance(output, testCase.quiz_topic_keywords));
+    }
+  }
 
   // Content evaluators (only for ANSWER behavior)
   if (testCase.expected_behavior === 'ANSWER') {
