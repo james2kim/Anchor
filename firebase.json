@@ -1,5 +1,6 @@
 {
   "hosting": {
+    "site": "anchor-cd21e",
     "public": "public",
     "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
     "rewrites": [

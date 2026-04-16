@@ -28,14 +28,22 @@ class QuizStoreClass {
     userId: string,
     title: string,
     quizData: unknown,
-    inputData: unknown
+    inputData: unknown,
+    runId?: string
   ): Promise<string> {
+    // Idempotency: if a runId is provided and already exists, return the existing record
+    if (runId) {
+      const existing = await this.knex('quizzes').where({ run_id: runId }).first();
+      if (existing) return existing.id;
+    }
+
     const [row] = await this.knex('quizzes')
       .insert({
         user_id: userId,
         title,
         quiz_data: JSON.stringify(quizData),
         input_data: JSON.stringify(inputData),
+        run_id: runId ?? null,
       })
       .returning('id');
     return row.id;

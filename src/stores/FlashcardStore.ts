@@ -28,14 +28,22 @@ class FlashcardStoreClass {
     userId: string,
     title: string,
     flashcardData: unknown,
-    inputData: unknown
+    inputData: unknown,
+    runId?: string
   ): Promise<string> {
+    // Idempotency: if a runId is provided and already exists, return the existing record
+    if (runId) {
+      const existing = await this.knex('flashcards').where({ run_id: runId }).first();
+      if (existing) return existing.id;
+    }
+
     const [row] = await this.knex('flashcards')
       .insert({
         user_id: userId,
         title,
         flashcard_data: JSON.stringify(flashcardData),
         input_data: JSON.stringify(inputData),
+        run_id: runId ?? null,
       })
       .returning('id');
     return row.id;

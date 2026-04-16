@@ -206,10 +206,23 @@ async function getFormattedAnswerToUserinput(userQuery: string, sessionId: strin
 // API Routes
 
 // GET /api/chat/progress/:sessionId - SSE endpoint for workflow step progress
-// Uses query param auth since EventSource doesn't support custom headers
-app.get('/api/chat/progress/:sessionId', (req, res) => {
-  // Auth: requireAuth() doesn't work with EventSource, so validate via query token
-  // The sessionId itself is a UUID that's only known to the authenticated user
+// EventSource doesn't support custom headers, so we validate the Clerk JWT from query param
+app.get('/api/chat/progress/:sessionId', async (req, res) => {
+  const token = req.query.token as string | undefined;
+  if (!token) {
+    return res.status(401).end();
+  }
+
+  // Verify JWT with Clerk
+  try {
+    const { verifyToken } = await import('@clerk/express');
+    await verifyToken(token, {
+      secretKey: process.env.CLERK_SECRET_KEY,
+    });
+  } catch {
+    return res.status(401).end();
+  }
+
   const sessionId = req.params.sessionId as string;
   if (!sessionId || sessionId.length < 10) {
     return res.status(400).end();
@@ -295,17 +308,21 @@ app.post('/api/chat', requireAuth(), async (req, res) => {
     if (executedWorkflow && result?.workflowData !== undefined) {
       response.workflowData = result.workflowData;
 
+      // Extract run ID from trace for idempotent save
+      const executeSpan = trace?.spans?.find((s) => s.node === 'executeWorkflow');
+      const runId = executeSpan?.meta?.runId as string | undefined;
+
       const wd = result.workflowData as { title?: string; questions?: unknown[]; cards?: unknown[] };
       if (wd?.title && wd?.questions) {
         try {
-          const quizId = await QuizStore.save(userId, wd.title, result.workflowData, {});
+          const quizId = await QuizStore.save(userId, wd.title, result.workflowData, {}, runId);
           response.quizId = quizId;
         } catch (err) {
           console.error('[/api/chat] Failed to save quiz:', err);
         }
       } else if (wd?.title && wd?.cards) {
         try {
-          const flashcardId = await FlashcardStore.save(userId, wd.title, result.workflowData, {});
+          const flashcardId = await FlashcardStore.save(userId, wd.title, result.workflowData, {}, runId);
           response.flashcardId = flashcardId;
         } catch (err) {
           console.error('[/api/chat] Failed to save flashcards:', err);

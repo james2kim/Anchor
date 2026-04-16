@@ -65,17 +65,27 @@ const executeWorkflowInner = async (state: AgentState) => {
 
     // ---- Route to the correct workflow tool ----
     const routingSpan = TraceUtil.startSpan('workflowRouting');
-    const preResolved = state.matchedWorkflowTool
+    let preResolved = state.matchedWorkflowTool
       ? getToolByName(state.matchedWorkflowTool)
       : null;
+
+    // Validate: if the LLM selected a tool name that doesn't exist in the registry, reject it
+    if (state.matchedWorkflowTool && !preResolved) {
+      wlog.warn(
+        `[executeWorkflow] LLM selected unknown tool "${state.matchedWorkflowTool}" — not in registry. Falling back to keyword routing.`
+      );
+      preResolved = null;
+    }
+
     const routeResult = preResolved
-      ? { tool: preResolved, method: 'deterministic' as const }
+      ? { tool: preResolved, method: 'llm_tool_use' as const }
       : routeToTool(state.userQuery);
 
     trace = routingSpan.end(trace, {
       selectedTool: routeResult?.tool.name ?? 'none',
-      routingMethod: routeResult?.method ?? 'none',
+      routingMethod: routeResult ? (preResolved ? 'llm_tool_use' : 'keyword_fallback') : 'none',
       preResolved: preResolved != null,
+      llmSelectedTool: state.matchedWorkflowTool ?? null,
     });
 
     if (!routeResult) {
@@ -162,6 +172,7 @@ const executeWorkflowInner = async (state: AgentState) => {
     trace = outerSpan.end(result.trace, {
       selectedTool: routeResult.tool.name,
       routingMethod: routeResult.method,
+      runId: run.runId,
       success: result.success,
       totalInputTokens: result.totalInputTokens,
       totalOutputTokens: result.totalOutputTokens,
